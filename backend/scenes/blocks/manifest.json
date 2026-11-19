@@ -123,16 +123,6 @@
       "scale": 0.9437,
       "background": false,
       "depth": 10
-    },
-    {
-      "id": "layer-12",
-      "name": "标记",
-      "file": "layer-12.png",
-      "x": 0,
-      "y": 0,
-      "scale": 1.0,
-      "background": false,
-      "depth": 5
     }
   ]
 }
