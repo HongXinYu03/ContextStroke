@@ -163,8 +163,8 @@ def test_crossed_layers_split_by_hit_set():
     assert result["tracks"][0]["cost"] == 0
 
 
-def test_overlapping_subjects_offer_alternating_bands():
-    """Slippers on a carpet: carpet-only and slippers+carpet spans can pick different bands."""
+def test_overlapping_subjects_use_nested_and_envelope_bands():
+    """Slippers on carpet: fine = slippers front/behind; coarse = carpet front/behind."""
     carpet = _layer("carpet", "地毯", 3, 400, 200, (40, 40, 280, 120))
     slippers = _layer("slippers", "拖鞋", 1, 400, 200, (100, 60, 80, 60))
     scene = _scene([carpet, slippers])
@@ -187,25 +187,39 @@ def test_overlapping_subjects_offer_alternating_bands():
         ("carpet",),
     ]
     summaries = [track["summary"] for track in result["tracks"]]
-    # One-band step between contiguous spans stays (carpet front ↔ between slippers/carpet).
-    assert "2-3 → 1-2 → 2-3 → 1-2 → 2-3" in summaries
-    # Jumping from carpet-front to slippers-front is filtered (Δslot = 2).
-    assert "2-3 → 0-1 → 2-3 → 0-1 → 2-3" not in summaries
-    assert all("3-4 → 0-1" not in summary and "0-1 → 3-4" not in summary for summary in summaries)
-    # Coarse (unsplit) constant readings remain available as references.
+    labels = {
+        segment["label"]
+        for track in result["tracks"]
+        for segment in track["segments"]
+        if segment["relation"] == "band"
+    }
+    # Fine narrative: slippers only. Coarse narrative: carpet only.
+    assert labels == {"0-1", "1-2", "2-3", "3-4"}
     assert "0-1" in summaries
     assert "1-2" in summaries
-    assert any(track["cost"] > 0 for track in result["tracks"])
+    assert "2-3" in summaries
+    assert "3-4" in summaries
+    # Fine must not offer carpet-behind mixed into slippers atomic reading.
+    assert all("3-4 → 0-1" not in summary and "0-1 → 3-4" not in summary for summary in summaries)
+    assert all("2-3 → 0-1" not in summary and "0-1 → 2-3" not in summary for summary in summaries)
 
 
-def test_contiguous_spans_reject_cross_layer_jumps():
-    """Behind carpet then in front of slippers on contiguous spans must not appear."""
+def test_contiguous_nested_stroke_keeps_narratives_separate():
+    """Carpet-only + slippers spans stay in slippers bands; coarse stays on carpet."""
     carpet = _layer("carpet", "地毯", 3, 400, 200, (40, 40, 280, 120))
     slippers = _layer("slippers", "拖鞋", 1, 400, 200, (100, 60, 80, 60))
     scene = _scene([carpet, slippers])
     result = solve(scene, [(60, 90), (140, 90), (220, 90)])
     summaries = [track["summary"] for track in result["tracks"]]
-    assert any("2-3" in summary and "1-2" in summary for summary in summaries)
+    labels = {
+        segment["label"]
+        for track in result["tracks"]
+        for segment in track["segments"]
+        if segment["relation"] == "band"
+    }
+    assert labels == {"0-1", "1-2", "2-3", "3-4"}
+    assert "0-1" in summaries and "1-2" in summaries
+    assert "2-3" in summaries and "3-4" in summaries
     assert all(
         "3-4 → 0-1" not in summary
         and "0-1 → 3-4" not in summary
@@ -213,11 +227,59 @@ def test_contiguous_spans_reject_cross_layer_jumps():
         and "0-1 → 2-3" not in summary
         for summary in summaries
     )
-    assert "0-1" in summaries
-    assert "1-2" in summaries
 
 
-def test_wide_gap_uses_the_band_after_each_layer():
+def test_front_subject_constrains_only_spans_it_participates_in():
+    """Sofa and carpet do not overlap. Tea constrains its own span and the neighbor it cuts."""
+    sofa = _layer("sofa", "沙发", 3, 400, 300, (40, 20, 220, 110))
+    carpet = _layer("carpet", "地毯", 2, 400, 300, (40, 160, 280, 110))
+    table = _layer("table", "茶几", 1, 400, 300, (120, 90, 70, 120))
+    scene = _scene([sofa, carpet, table], 400, 300)
+    # sofa only → carpet only → carpet+tea
+    result = solve(scene, [(80, 80), (80, 200), (160, 200)])
+    assert result["status"] == "ok"
+
+    def hits_at(x, y):
+        best = None
+        for sample in result["samples"]:
+            if abs(sample["x"] - x) > 8 or abs(sample["y"] - y) > 12:
+                continue
+            best = tuple(sorted(hit["id"] for hit in sample["hits"]))
+        return best
+
+    assert hits_at(80, 80) == ("sofa",)
+    assert hits_at(80, 200) == ("carpet",)
+    assert hits_at(160, 200) == ("carpet", "table")
+
+    def covering(x, y):
+        found = []
+        for track in result["tracks"]:
+            for segment in track["segments"]:
+                if segment["relation"] != "band":
+                    continue
+                if any(abs(point["x"] - x) <= 8 and abs(point["y"] - y) <= 12 for point in segment["points"]):
+                    found.append(segment)
+        return found
+
+    # Tea constrains the carpet span it cuts and the span on the tea table.
+    for point in ((80, 200), (160, 200)):
+        tea_segments = [segment for segment in covering(*point) if "table" in segment["layer_ids"]]
+        assert tea_segments
+        assert {segment["label"] for segment in tea_segments} <= {"0-1", "1-2"}
+    # Rear envelope still reads the tea-table samples as carpet, without tea.
+    assert any(
+        "carpet" in segment["layer_ids"] and "table" not in segment["layer_ids"]
+        for segment in covering(160, 200)
+    )
+    # Sofa span is outside the tea cut.
+    sofa_segments = covering(80, 80)
+    assert sofa_segments
+    assert all("table" not in segment["layer_ids"] for segment in sofa_segments)
+    assert {segment["label"] for segment in sofa_segments} <= {"2-3", "3-4"}
+
+
+def test_wide_gap_uses_nested_fine_and_rear_coarse_bands():
+    """Fully overlapping near+far: fine around near, coarse around far."""
     near = _layer("near", "近处", 1, 200, 80, (0, 0, 200, 80))
     far = _layer("far", "远处", 4, 200, 80, (0, 0, 200, 80))
     result = solve(_scene([near, far], 200, 80), [(20, 40), (180, 40)])
@@ -233,5 +295,5 @@ def test_wide_gap_uses_the_band_after_each_layer():
         for segment in track["segments"]
         if segment["relation"] == "band"
     }
-    assert depths == {0.5, 1.5, 4.5}
-    assert labels == {"0-1", "1-2", "4-5"}
+    assert depths == {0.5, 1.5, 3.5, 4.5}
+    assert labels == {"0-1", "1-2", "3-4", "4-5"}

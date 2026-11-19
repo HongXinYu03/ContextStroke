@@ -2,11 +2,12 @@
 
 A sample is on only when it hits a subject mask. The background layer is
 visual only for hits: a point that touches nothing but the background stays
-off. While the stroke stays on, a change in the hit-set (which subjects are
-touched) starts a new atomic span. Each span keeps one depth band from its
-own hits. Contiguous atomic spans (no off between them) may only change by
-one depth band; off may still bridge any jump. Candidates also include the
-coarser on/off spans that keep one band for a whole on-region.
+off. While the stroke stays on, a change in the hit-set starts a new atomic
+span. A subject constrains a span when it hits that span, or when one
+endpoint of the span is the boundary where that subject opens onto a shared
+deeper hit. The span then uses only the front/behind bands of its front-most
+participant. Coarse readings drop those front overlays and follow the deepest
+hit. Contiguous spans may change by at most one band; off may bridge any jump.
 """
 
 from __future__ import annotations

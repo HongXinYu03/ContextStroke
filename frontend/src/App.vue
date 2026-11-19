@@ -91,13 +91,29 @@ async function loadScene(id: string) {
   loading.value = false
 }
 
-function keepDepths(next: SceneDetail): LayerModel[] {
-  const local = new Map(layers.value.map((layer) => [layer.id, layer.depth]))
-  return pinBackground(next.layers.map((layer) => ({ ...layer, depth: local.get(layer.id) ?? layer.depth })))
+function keepLocalFields(next: SceneDetail): LayerModel[] {
+  const local = new Map(layers.value.map((layer) => [layer.id, layer]))
+  return pinBackground(
+    next.layers.map((layer) => {
+      const previous = local.get(layer.id)
+      return {
+        ...layer,
+        depth: previous?.depth ?? layer.depth,
+        visible: previous?.visible ?? layer.visible,
+      }
+    }),
+  )
+}
+
+function onToggleVisible(id: string) {
+  layers.value = layers.value.map((layer) =>
+    layer.id === id ? { ...layer, visible: !layer.visible } : layer,
+  )
+  if (scene.value) scene.value = { ...scene.value, layers: layers.value }
 }
 
 function applyScene(next: SceneDetail) {
-  const merged = keepDepths(next)
+  const merged = keepLocalFields(next)
   scene.value = { ...next, layers: merged, width: next.width, height: next.height }
   layers.value = merged
 }
@@ -357,6 +373,7 @@ watch(depthSignature, (value, previous) => {
         @merge="onMergeLayers"
         @transform="onTransform"
         @background="onBackground"
+        @toggle-visible="onToggleVisible"
       />
       <Viewport
         :layers="layers"

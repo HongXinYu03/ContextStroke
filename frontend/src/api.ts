@@ -81,6 +81,7 @@ function mapLayer(layer: RawLayer): LayerModel {
     y: layer.y,
     scale: layer.scale && layer.scale > 0 ? layer.scale : 1,
     background: Boolean(layer.background),
+    visible: true,
     pixelWidth: layer.pixel_width,
     pixelHeight: layer.pixel_height,
     imageUrl: layer.image_url,
@@ -97,6 +98,8 @@ function mapTrack(track: RawTrack): Track {
     cost: track.cost,
     selected: track.selected,
     summary: track.summary,
+    refIds: track.ref_ids ?? [],
+    refNames: track.ref_names ?? [],
     breaks: track.breaks,
     segments: track.segments.map((segment) => ({
       start: segment.start,

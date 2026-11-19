@@ -232,6 +232,7 @@ function syncPlanes() {
     }
     const place = planePlacement(layer)
     record.mesh.position.set(place.cx, place.cy, planeZ(layer))
+    record.mesh.visible = layer.visible
     setBorder(record, layer.id === props.activeLayerId)
   }
   if (hitPlane) {
@@ -371,6 +372,7 @@ function pointerPixel(event: PointerEvent) {
 function layerAt(pixel: { x: number; y: number }) {
   const ordered = [...props.layers].sort((left, right) => left.depth - right.depth)
   for (const layer of ordered) {
+    if (!layer.visible) continue
     const width = layer.pixelWidth * layer.scale
     const height = layer.pixelHeight * layer.scale
     if (pixel.x >= layer.x && pixel.x <= layer.x + width && pixel.y >= layer.y && pixel.y <= layer.y + height) {
@@ -548,7 +550,10 @@ onBeforeUnmount(() => {
 watch(
   () =>
     props.layers
-      .map((layer) => `${layer.id}:${layer.depth}:${layer.imageUrl}:${layer.x}:${layer.y}:${layer.scale}`)
+      .map(
+        (layer) =>
+          `${layer.id}:${layer.depth}:${layer.imageUrl}:${layer.x}:${layer.y}:${layer.scale}:${layer.visible ? 1 : 0}`,
+      )
       .join('|'),
   () => syncPlanes(),
 )
