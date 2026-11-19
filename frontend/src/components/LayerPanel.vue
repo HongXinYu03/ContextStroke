@@ -17,6 +17,7 @@ const emit = defineEmits<{
   merge: [ids: string[]]
   transform: [payload: { id: string; x: number; y: number; scale: number }]
   background: [id: string]
+  toggleVisible: [id: string]
 }>()
 
 const active = computed(() => props.layers.find((layer) => layer.id === props.activeId) ?? null)
@@ -189,7 +190,11 @@ function onDropGap(index: number) {
             v-for="layer in group.items"
             :key="layer.id"
             class="layer"
-            :class="{ active: layer.id === activeId, dragging: layer.id === draggingId }"
+            :class="{
+              active: layer.id === activeId,
+              dragging: layer.id === draggingId,
+              hidden: !layer.visible,
+            }"
             :draggable="!layer.background"
             @click="emit('select', layer.id)"
             @dragstart="!layer.background && onDragStart(layer.id, $event)"
@@ -207,6 +212,9 @@ function onDropGap(index: number) {
               </label>
               <strong>{{ layer.name }}{{ layer.background ? ' · 背景' : '' }}</strong>
               <div class="steps">
+                <button type="button" @click.stop="emit('toggleVisible', layer.id)">
+                  {{ layer.visible ? '隐藏' : '显示' }}
+                </button>
                 <button
                   type="button"
                   :disabled="layer.background"
@@ -293,6 +301,12 @@ p {
 }
 .layer.dragging {
   opacity: 0.45;
+}
+.layer.hidden {
+  opacity: 0.45;
+}
+.layer.hidden .thumb {
+  filter: grayscale(0.85);
 }
 .thumb {
   width: 72px;

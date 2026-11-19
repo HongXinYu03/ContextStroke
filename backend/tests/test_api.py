@@ -53,10 +53,16 @@ def test_blocks_scene_and_cross_layer_stroke(monkeypatch):
     assert result["status"] == "ok"
     assert result["tracks"][0]["selected"] is True
     assert result["tracks"][0]["cost"] == 0
+    # Plant cuts the table span, so the cheapest constant reading is plant-front.
     assert result["tracks"][0]["summary"] == "0-1"
     summaries = {track["summary"] for track in result["tracks"]}
-    # Coarse constant bands plus fine hit-set progressions.
-    assert {"0-1", "1-2", "2-3"} <= summaries
+    # Fine still offers plant-front progressions; coarse offers table bands.
+    assert {"0-1", "1-2", "2-3"} <= {
+        segment["label"]
+        for track in result["tracks"]
+        for segment in track["segments"]
+        if segment["relation"] == "band"
+    }
     assert any("→" in summary for summary in summaries)
 
     shifted = client.post(

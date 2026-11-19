@@ -8,11 +8,11 @@
       "id": "Background",
       "name": "Background",
       "file": "Background.png",
-      "x": 79,
+      "x": 76,
       "y": 25,
       "scale": 0.9437,
       "background": true,
-      "depth": 12
+      "depth": 11
     },
     {
       "id": "layer",
@@ -22,7 +22,7 @@
       "y": 291,
       "scale": 0.9437,
       "background": false,
-      "depth": 11
+      "depth": 10
     },
     {
       "id": "layer-2",
@@ -38,8 +38,8 @@
       "id": "layer-3",
       "name": "拖鞋",
       "file": "layer-3.png",
-      "x": 944,
-      "y": 1257,
+      "x": 962,
+      "y": 1280,
       "scale": 0.7475,
       "background": false,
       "depth": 2
@@ -88,31 +88,11 @@
       "id": "layer-8",
       "name": "沙发",
       "file": "layer-8.png",
-      "x": 690,
-      "y": 775,
+      "x": 693,
+      "y": 777,
       "scale": 0.9437,
       "background": false,
       "depth": 7
-    },
-    {
-      "id": "layer-9",
-      "name": "黑色置物架",
-      "file": "layer-9.png",
-      "x": 306,
-      "y": 589,
-      "scale": 0.8399,
-      "background": false,
-      "depth": 8
-    },
-    {
-      "id": "layer-10",
-      "name": "衣架",
-      "file": "layer-10.png",
-      "x": 1585,
-      "y": 294,
-      "scale": 0.9437,
-      "background": false,
-      "depth": 9
     },
     {
       "id": "layer-11",
@@ -122,17 +102,17 @@
       "y": 176,
       "scale": 0.9437,
       "background": false,
-      "depth": 10
+      "depth": 9
     },
     {
-      "id": "layer-12",
-      "name": "标记",
-      "file": "layer-12.png",
+      "id": "merged",
+      "name": "衣架与黑色置物架",
+      "file": "merged.png",
       "x": 0,
       "y": 0,
       "scale": 1.0,
       "background": false,
-      "depth": 5
+      "depth": 8
     }
   ]
 }

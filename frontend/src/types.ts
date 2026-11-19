@@ -6,6 +6,8 @@ export type LayerModel = {
   y: number
   scale: number
   background: boolean
+  /** Frontend-only: hide plane in the viewport without deleting the layer. */
+  visible: boolean
   pixelWidth: number
   pixelHeight: number
   imageUrl: string
