@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from .scene import Scene
 from .types import Hit, Sample
 
@@ -10,6 +12,35 @@ ALPHA = 128
 
 def subject_layers(scene: Scene):
     return [layer for layer in scene.layers if not layer.background]
+
+
+def overlapping_subjects(scene: Scene) -> set[frozenset[str]]:
+    """Subject pairs whose opaque pixels meet. Disjoint layers stay a real gap."""
+    step = 4
+    occupants: dict[tuple[int, int], set[str]] = {}
+    for layer in subject_layers(scene):
+        if layer.mask.size == 0:
+            continue
+        sampled = layer.mask[::step, ::step] >= ALPHA
+        local_ys, local_xs = np.nonzero(sampled)
+        if local_ys.size == 0:
+            continue
+        scale = layer.scale if layer.scale > 1e-9 else 1.0
+        scene_x = layer.x + local_xs.astype(np.float64) * step * scale
+        scene_y = layer.y + local_ys.astype(np.float64) * step * scale
+        cell_x = np.floor(scene_x / step).astype(np.int64)
+        cell_y = np.floor(scene_y / step).astype(np.int64)
+        for key in zip(cell_x.tolist(), cell_y.tolist()):
+            occupants.setdefault((int(key[0]), int(key[1])), set()).add(layer.id)
+    pairs: set[frozenset[str]] = set()
+    for ids in occupants.values():
+        if len(ids) < 2:
+            continue
+        ordered = sorted(ids)
+        for left_index, left in enumerate(ordered):
+            for right in ordered[left_index + 1 :]:
+                pairs.add(frozenset((left, right)))
+    return pairs
 
 
 def background_front(scene: Scene) -> float | None:

@@ -1,14 +1,14 @@
 """On-span construction.
 
-Fine spans keep hit-set cuts. A subject participates in a span when it is in
-that span's hits, or when a contiguous endpoint was opened by that subject
-entering on top of a shared deeper hit. The span may then sit only in front
-of or behind its front-most participant. Spans the front subject does not
-touch keep the rear subjects that actually cut them.
+Each depth that the stroke meets is one cut, deepest first. A cut only uses
+that subject's front band or behind band.
 
-Coarse spans ignore those front overlays and follow the deepest hit at each
-sample, so sofa and carpet stay one rear envelope without a separate
-front-subject cut.
+A subject that stays hit the whole way is one segment: the entire stroke in
+front of it, or the entire stroke behind it. A hollow contour splits the
+stroke where that contour appears and disappears. The span inside the hole
+belongs to that hollow cut, not to the rear subject as its own segment. A
+deeper contour that opens a span still claims it; the shallower cut cannot
+rewrite the claim.
 """
 
 from __future__ import annotations
@@ -22,15 +22,33 @@ def hit_key(sample: Sample) -> tuple[str, ...]:
     return tuple(hit.id for hit in sample.hits)
 
 
-def fine_runs(samples: list[Sample]) -> list[Run]:
-    """Hit-set spans whose bands follow the front-most subject that participates."""
-    raw = _raw_hitset_spans(samples)
-    if not raw:
+def depth_passes(
+    samples: list[Sample], overlaps: set[frozenset[str]] | None = None
+) -> list[list[Run]]:
+    """One reading per depth. Each reading uses only that subject's front/behind."""
+    spans = _raw_hitset_spans(samples)
+    if not spans:
         return []
-    runs: list[Run] = []
-    for chain in _contiguous_span_chains(raw):
-        runs.extend(_participant_runs(samples, chain))
-    return runs
+    span_hits = [list(samples[start].hits) for start, _end in spans]
+    claimed = _exclusive_claims(spans, span_hits, overlaps or set())
+    depths = sorted({hit.depth for hits in span_hits for hit in hits}, reverse=True)
+    passes = []
+    for depth in depths:
+        runs = _pass_runs(spans, span_hits, claimed, depth)
+        if runs:
+            passes.append(runs)
+    # Real off between subjects still needs one reading that can bridge them.
+    # Contiguous overlaps stay on the per-depth cuts only, so a shelf cut never
+    # mixes sofa-front into the same candidate.
+    if _has_off_gap(spans):
+        bridge = _bridge_runs(spans, span_hits, claimed)
+        if bridge and bridge not in passes:
+            passes.append(bridge)
+    return passes
+
+
+def _has_off_gap(spans: list[tuple[int, int]]) -> bool:
+    return any(left[1] + 1 != right[0] for left, right in zip(spans, spans[1:]))
 
 
 def _raw_hitset_spans(samples: list[Sample]) -> list[tuple[int, int]]:
@@ -58,82 +76,199 @@ def _raw_hitset_spans(samples: list[Sample]) -> list[tuple[int, int]]:
     return spans
 
 
-def _contiguous_span_chains(spans: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
-    chains: list[list[tuple[int, int]]] = [[spans[0]]]
-    for span in spans[1:]:
-        if chains[-1][-1][1] + 1 == span[0]:
-            chains[-1].append(span)
+def _exclusive_claims(
+    spans: list[tuple[int, int]], span_hits: list[list[Hit]], overlaps: set[frozenset[str]]
+) -> dict[int, list[Hit]]:
+    """Spans opened by a deeper contour stay with that contour.
+
+    A blank gap counts too when the subjects overlap, so a shelf hollow or
+    silhouette still owns the span on the other side of that off.
+    """
+    claimed: dict[int, list[Hit]] = {}
+    for index in range(len(spans) - 1):
+        contiguous = spans[index][1] + 1 == spans[index + 1][0]
+        if not contiguous and not _subjects_overlap(span_hits[index], span_hits[index + 1], overlaps):
+            continue
+        _claim_exit(span_hits[index], span_hits[index + 1], index + 1, claimed)
+        _claim_exit(span_hits[index + 1], span_hits[index], index, claimed)
+    return claimed
+
+
+def _subjects_overlap(left: list[Hit], right: list[Hit], overlaps: set[frozenset[str]]) -> bool:
+    left_ids = {hit.id for hit in left}
+    right_ids = {hit.id for hit in right}
+    return any(
+        frozenset((left_id, right_id)) in overlaps
+        for left_id in left_ids
+        for right_id in right_ids
+        if left_id != right_id
+    )
+
+
+def _claim_exit(source: list[Hit], dest: list[Hit], dest_index: int, claimed: dict[int, list[Hit]]) -> None:
+    dest_ids = {hit.id for hit in dest}
+    disappeared = [hit for hit in source if hit.id not in dest_ids]
+    if not disappeared or not dest:
+        return
+    dest_rear = max(hit.depth for hit in dest)
+    owners = [hit for hit in disappeared if hit.depth > dest_rear]
+    if not owners:
+        return
+    owner_depth = max(hit.depth for hit in owners)
+    owners = [hit for hit in owners if hit.depth == owner_depth]
+    previous = claimed.get(dest_index)
+    if previous is None or owner_depth > previous[0].depth:
+        claimed[dest_index] = owners
+
+
+def _pass_runs(
+    spans: list[tuple[int, int]],
+    span_hits: list[list[Hit]],
+    claimed: dict[int, list[Hit]],
+    depth: int,
+) -> list[Run]:
+    """This cut uses only this subject's front/behind bands.
+
+    Spans where this subject stays hit and the spans touch are one segment, so
+    a rear layer under a hollow frame moves as a whole. A span this contour
+    opens but does not hit — the hole, or the stroke just outside the frame —
+    stays its own segment on this cut. Spans claimed by another depth are left
+    out.
+    """
+    owned = [
+        index
+        for index in range(len(spans))
+        if _owner_hits(spans, span_hits, claimed, index, depth) is not None
+    ]
+    if not owned:
+        return []
+    groups: list[list[int]] = [[owned[0]]]
+    for index in owned[1:]:
+        previous = groups[-1][-1]
+        if _same_presence(spans, span_hits, previous, index, depth):
+            groups[-1].append(index)
         else:
-            chains.append([span])
-    return chains
-
-
-def _participant_runs(samples: list[Sample], chain: list[tuple[int, int]]) -> list[Run]:
-    span_hits = [list(samples[start].hits) for start, _end in chain]
+            groups.append([index])
     runs: list[Run] = []
-    for index, ((start, end), hits) in enumerate(zip(chain, span_hits)):
-        chosen = {hit.id: hit for hit in hits}
-        front = min((hit.depth for hit in hits), default=None)
-        for neighbor in (index - 1, index + 1):
-            if neighbor < 0 or neighbor >= len(chain) or front is None:
-                continue
-            if not _spans_touch(chain[index], chain[neighbor]):
-                continue
-            own_ids = {hit.id for hit in hits}
-            other = span_hits[neighbor]
-            # A subject in the neighbor but not here opened this endpoint.
-            for hit in other:
-                if hit.id not in own_ids and hit.depth < front:
-                    chosen[hit.id] = hit
-        ref_depth = min(hit.depth for hit in chosen.values())
-        ref = [hit for hit in chosen.values() if hit.depth == ref_depth]
-        runs.append(Run(start, end, tuple(slots_around_hits(ref))))
+    for group in groups:
+        start = spans[group[0]][0]
+        end = spans[group[-1]][1]
+        reference = _reference_hits(spans, span_hits, claimed, group[0], depth)
+        runs.append(Run(start, end, tuple(slots_around_hits(reference))))
     return runs
 
 
-def _spans_touch(left: tuple[int, int], right: tuple[int, int]) -> bool:
-    return left[1] + 1 == right[0] or right[1] + 1 == left[0]
+def _same_presence(
+    spans: list[tuple[int, int]],
+    span_hits: list[list[Hit]],
+    left: int,
+    right: int,
+    depth: int,
+) -> bool:
+    """Merge only while this subject itself stays hit. A hole breaks the merge."""
+    if left + 1 != right:
+        return False
+    if spans[left][1] + 1 != spans[right][0]:
+        return False
+    return _has_depth(span_hits[left], depth) and _has_depth(span_hits[right], depth)
 
 
-def _deepest(hits: list[Hit]) -> list[Hit]:
-    if not hits:
-        return []
-    depth = max(hit.depth for hit in hits)
+def _has_depth(hits: list[Hit], depth: int) -> bool:
+    return any(hit.depth == depth for hit in hits)
+
+
+def _reference_hits(
+    spans: list[tuple[int, int]],
+    span_hits: list[list[Hit]],
+    claimed: dict[int, list[Hit]],
+    index: int,
+    depth: int,
+) -> list[Hit]:
+    owners = claimed.get(index)
+    if owners is not None and owners[0].depth == depth:
+        return owners
+    found = [hit for hit in span_hits[index] if hit.depth == depth]
+    if found:
+        return found
+    return _hits_at_depth(spans, span_hits, index, depth)
+
+
+def _bridge_runs(
+    spans: list[tuple[int, int]], span_hits: list[list[Hit]], claimed: dict[int, list[Hit]]
+) -> list[Run]:
+    """Full-stroke reading across a real off gap.
+
+    Each span stays with the contour that claimed it, otherwise with the front
+    subject on that span. A sofa behind the tea table must not pull the span
+    back to sofa depth just because the mask is also hit.
+    """
+    runs: list[Run] = []
+    for index, (start, end) in enumerate(spans):
+        reference = claimed.get(index) or _front(span_hits[index])
+        runs.append(Run(start, end, tuple(slots_around_hits(reference))))
+    return runs
+
+
+def _owner_hits(
+    spans: list[tuple[int, int]],
+    span_hits: list[list[Hit]],
+    claimed: dict[int, list[Hit]],
+    index: int,
+    depth: int,
+) -> list[Hit] | None:
+    owners = claimed.get(index)
+    if owners is not None:
+        if owners[0].depth != depth:
+            return None
+        return owners
+    if not _depth_cuts(spans, span_hits, index, depth):
+        return None
+    return _hits_at_depth(spans, span_hits, index, depth)
+
+
+def _front(hits: list[Hit]) -> list[Hit]:
+    depth = min(hit.depth for hit in hits)
     return [hit for hit in hits if hit.depth == depth]
 
 
-def coarse_runs(samples: list[Sample]) -> list[Run]:
-    """Rear envelope: each sample keeps its deepest hit, then spans follow that key.
+def _depth_cuts(
+    spans: list[tuple[int, int]], span_hits: list[list[Hit]], index: int, depth: int
+) -> bool:
+    """True when this depth is hit here, or its contour is a contiguous endpoint.
 
-    A front subject that only lies on a deeper one drops out, so the stroke is
-    cut by sofa and carpet without a tea-table band.
+    The rear subject under a hollow frame is hit inside the hole and on the
+    frame, so it owns the whole stroke. The hollow subject also owns the hole:
+    its contour is the endpoint, even though the hole itself does not hit it.
     """
-    runs: list[Run] = []
-    start: int | None = None
-    key: tuple[str, ...] | None = None
-    rear: list[Hit] = []
-    for index, sample in enumerate(samples):
-        if not sample.on:
-            if start is not None:
-                runs.append(Run(start, index - 1, tuple(slots_around_hits(rear))))
-                start = None
-                key = None
+    if _has_depth(span_hits[index], depth):
+        return True
+    own_ids = {hit.id for hit in span_hits[index]}
+    for neighbor in (index - 1, index + 1):
+        if neighbor < 0 or neighbor >= len(spans):
             continue
-        current = _deepest(sample.hits)
-        current_key = tuple(hit.id for hit in sorted(current, key=lambda hit: hit.id))
-        if start is None:
-            start = index
-            key = current_key
-            rear = current
+        if spans[index][1] + 1 != spans[neighbor][0] and spans[neighbor][1] + 1 != spans[index][0]:
             continue
-        if current_key != key:
-            runs.append(Run(start, index - 1, tuple(slots_around_hits(rear))))
-            start = index
-            key = current_key
-            rear = current
-    if start is not None:
-        runs.append(Run(start, len(samples) - 1, tuple(slots_around_hits(rear))))
-    return runs
+        if any(hit.depth == depth and hit.id not in own_ids for hit in span_hits[neighbor]):
+            return True
+    return False
+
+
+def _hits_at_depth(
+    spans: list[tuple[int, int]], span_hits: list[list[Hit]], index: int, depth: int
+) -> list[Hit]:
+    found = [hit for hit in span_hits[index] if hit.depth == depth]
+    if found:
+        return found
+    own_ids = {hit.id for hit in span_hits[index]}
+    for neighbor in (index - 1, index + 1):
+        if neighbor < 0 or neighbor >= len(spans):
+            continue
+        if spans[index][1] + 1 != spans[neighbor][0] and spans[neighbor][1] + 1 != spans[index][0]:
+            continue
+        found = [hit for hit in span_hits[neighbor] if hit.depth == depth and hit.id not in own_ids]
+        if found:
+            return found
+    raise RuntimeError(f"depth {depth} cuts span {index} but has no hits")
 
 
 def on_off_sequences(samples: list[Sample]) -> list[dict]:

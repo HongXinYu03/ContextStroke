@@ -53,10 +53,11 @@ def test_blocks_scene_and_cross_layer_stroke(monkeypatch):
     assert result["status"] == "ok"
     assert result["tracks"][0]["selected"] is True
     assert result["tracks"][0]["cost"] == 0
-    # Plant cuts the table span, so the cheapest constant reading is plant-front.
-    assert result["tracks"][0]["summary"] == "0-1"
+    # The plant-only span is opened by the table contour, so it stays on the table.
+    # The cheapest constant reading is the band between plant and table.
+    assert result["tracks"][0]["summary"] == "1-2"
     summaries = {track["summary"] for track in result["tracks"]}
-    # Fine still offers plant-front progressions; coarse offers table bands.
+    # Plant still cuts the overlap and the table span; the table pass keeps table bands.
     assert {"0-1", "1-2", "2-3"} <= {
         segment["label"]
         for track in result["tracks"]

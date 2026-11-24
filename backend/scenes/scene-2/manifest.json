@@ -1,0 +1,129 @@
+{
+  "id": "scene-2",
+  "name": "色块场景",
+  "format": "contextstroke-scene-v1",
+  "width": 2253,
+  "height": 1500,
+  "layers": [
+    {
+      "id": "Background",
+      "name": "Background",
+      "file": "Background.png",
+      "x": 79,
+      "y": 25,
+      "depth": 12,
+      "scale": 0.9437,
+      "background": true
+    },
+    {
+      "id": "layer",
+      "name": "挂画",
+      "file": "layer.png",
+      "x": 1239,
+      "y": 291,
+      "depth": 11,
+      "scale": 0.9437,
+      "background": false
+    },
+    {
+      "id": "layer-2",
+      "name": "前景植物",
+      "file": "layer-2.png",
+      "x": 1705,
+      "y": 856,
+      "depth": 1,
+      "scale": 1.0001,
+      "background": false
+    },
+    {
+      "id": "layer-3",
+      "name": "拖鞋",
+      "file": "layer-3.png",
+      "x": 944,
+      "y": 1257,
+      "depth": 2,
+      "scale": 0.7475,
+      "background": false
+    },
+    {
+      "id": "layer-4",
+      "name": "白色矮桌",
+      "file": "layer-4.png",
+      "x": 147,
+      "y": 1055,
+      "depth": 3,
+      "scale": 0.8399,
+      "background": false
+    },
+    {
+      "id": "layer-5",
+      "name": "挂灯",
+      "file": "layer-5.png",
+      "x": 876,
+      "y": 26,
+      "depth": 4,
+      "scale": 0.9437,
+      "background": false
+    },
+    {
+      "id": "layer-6",
+      "name": "棕色茶几",
+      "file": "layer-6.png",
+      "x": 1310,
+      "y": 979,
+      "depth": 5,
+      "scale": 0.9437,
+      "background": false
+    },
+    {
+      "id": "layer-7",
+      "name": "地毯",
+      "file": "layer-7.png",
+      "x": 865,
+      "y": 1174,
+      "depth": 6,
+      "scale": 0.8903,
+      "background": false
+    },
+    {
+      "id": "layer-8",
+      "name": "沙发",
+      "file": "layer-8.png",
+      "x": 690,
+      "y": 775,
+      "depth": 7,
+      "scale": 0.9437,
+      "background": false
+    },
+    {
+      "id": "layer-9",
+      "name": "黑色置物架",
+      "file": "layer-9.png",
+      "x": 306,
+      "y": 589,
+      "depth": 8,
+      "scale": 0.8399,
+      "background": false
+    },
+    {
+      "id": "layer-10",
+      "name": "衣架",
+      "file": "layer-10.png",
+      "x": 1585,
+      "y": 294,
+      "depth": 9,
+      "scale": 0.9437,
+      "background": false
+    },
+    {
+      "id": "layer-11",
+      "name": "白色置物架",
+      "file": "layer-11.png",
+      "x": 1857,
+      "y": 176,
+      "depth": 10,
+      "scale": 0.9437,
+      "background": false
+    }
+  ]
+}

@@ -3,20 +3,20 @@
 A sample is on only when it hits a subject mask. The background layer is
 visual only for hits: a point that touches nothing but the background stays
 off. While the stroke stays on, a change in the hit-set starts a new atomic
-span. A subject constrains a span when it hits that span, or when one
-endpoint of the span is the boundary where that subject opens onto a shared
-deeper hit. The span then uses only the front/behind bands of its front-most
-participant. Coarse readings drop those front overlays and follow the deepest
-hit. Contiguous spans may change by at most one band; off may bridge any jump.
+span. Each depth that the stroke meets produces one cut, deepest first, and that
+cut uses only that subject's front or behind band. A subject hit the whole way
+is one segment. A hollow contour keeps the hole as its own segment on that
+hollow cut. A deeper contour that opens a span claims it. Real off between
+disjoint subjects may still bridge, each span staying with its front subject.
 """
 
 from __future__ import annotations
 
 from .candidates import build_tracks
 from .resample import resample_2d
-from .sampling import background_front, refine_boundaries, sample_point
+from .sampling import background_front, overlapping_subjects, refine_boundaries, sample_point
 from .scene import Scene
-from .spans import coarse_runs, fine_runs, on_off_sequences
+from .spans import depth_passes, on_off_sequences
 from .types import Sample
 
 MESSAGES = {
@@ -33,7 +33,7 @@ def solve(
     *,
     spacing: float = 2.0,
     maximum: int = 4000,
-    max_tracks: int = 32,
+    max_tracks: int = 64,
 ) -> dict:
     resampled = resample_2d(stroke, spacing, maximum)
     if resampled is None:
@@ -46,12 +46,12 @@ def solve(
         "discontinuities": [],
         "tracks": [],
     }
-    atomic = fine_runs(samples)
-    if not atomic:
+    passes = depth_passes(samples, overlapping_subjects(scene))
+    if not passes:
         return {**payload, **status("all_off")}
 
     off_depth = background_front(scene)
-    tracks = build_tracks(samples, atomic, coarse_runs(samples), max_tracks, off_depth)
+    tracks = build_tracks(samples, passes, max_tracks, off_depth)
     payload["tracks"] = tracks
     return {**payload, **status("ok")}
 
