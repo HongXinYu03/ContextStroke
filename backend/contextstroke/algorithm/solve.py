@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from .candidates import build_tracks
 from .resample import resample_2d
-from .sampling import background_front, overlapping_subjects, refine_boundaries, sample_point
+from .sampling import overlapping_subjects, refine_boundaries, sample_point
 from .scene import Scene
 from .spans import depth_passes, on_off_sequences
 from .types import Sample
@@ -50,8 +50,7 @@ def solve(
     if not passes:
         return {**payload, **status("all_off")}
 
-    off_depth = background_front(scene)
-    tracks = build_tracks(samples, passes, max_tracks, off_depth)
+    tracks = build_tracks(samples, passes, max_tracks)
     payload["tracks"] = tracks
     return {**payload, **status("ok")}
 

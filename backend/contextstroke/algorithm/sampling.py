@@ -43,13 +43,6 @@ def overlapping_subjects(scene: Scene) -> set[frozenset[str]]:
     return pairs
 
 
-def background_front(scene: Scene) -> float | None:
-    for layer in scene.layers:
-        if layer.background:
-            return layer.depth - 0.5
-    return None
-
-
 def local_xy(layer, x: float, y: float) -> tuple[int, int]:
     scale = layer.scale if layer.scale > 1e-9 else 1.0
     return int(round((x - layer.x) / scale)), int(round((y - layer.y) / scale))

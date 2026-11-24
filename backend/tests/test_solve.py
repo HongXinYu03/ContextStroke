@@ -60,7 +60,7 @@ def test_background_alone_is_off_and_subjects_are_on():
     assert any(sample["on"] and any(hit["id"] == "sofa" for hit in sample["hits"]) for sample in across["samples"])
     assert "空白" in across["tracks"][0]["summary"]
     assert across["tracks"][0]["segments"][0]["relation"] == "off"
-    assert across["tracks"][0]["segments"][0]["slot_depth"] == 2.5
+    assert across["tracks"][0]["segments"][0]["slot_depth"] == 0.5
 
 
 def test_single_layer_offers_both_bands_and_prefers_the_nearer():
@@ -103,6 +103,22 @@ def test_gap_of_one_missing_layer_still_connects():
     assert result["tracks"][0]["cost"] == 1
     assert "1-2" in result["tracks"][0]["summary"]
     assert "2-3" in result["tracks"][0]["summary"]
+
+
+def test_off_between_bands_interpolates_in_depth():
+    """Blank between two subjects ramps from one band to the other, not the background."""
+    background = _layer("wall", "背景墙", 8, 400, 200, (0, 0, 400, 200))
+    background.background = True
+    near = _layer("near", "近处", 1, 400, 200, (0, 40, 80, 80))
+    far = _layer("far", "远处", 3, 400, 200, (160, 40, 80, 80))
+    result = solve(_scene([background, near, far]), [(40, 80), (200, 80)])
+    assert result["tracks"][0]["cost"] == 1
+    off = next(segment for segment in result["tracks"][0]["segments"] if segment["relation"] == "off")
+    depths = [point["slot_depth"] for point in off["points"]]
+    assert depths[0] < 1.7
+    assert depths[-1] > 2.3
+    assert all(left <= right + 1e-6 for left, right in zip(depths, depths[1:]))
+    assert max(depths) - min(depths) > 0.5
 
 
 def test_off_may_cross_large_depth_jumps():
