@@ -8,6 +8,8 @@
 
 灵感：Skippy（on/off、深度候选）+ 分层平面展示。后续可能接 VLM。
 
+算法说明（概念 + 例子，非 Agent 备忘）：`docs/algorithm.md`。
+
 ## 栈与端口
 
 | | |
