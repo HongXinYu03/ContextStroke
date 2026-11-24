@@ -14,19 +14,19 @@ MAX_CONTIGUOUS_JUMP = 1.0 + 1e-6
 
 def build_tracks(
     samples: list[Sample],
-    fine_runs: list[Run],
-    coarse_runs: list[Run],
+    run_groups: list[list[Run]],
     max_tracks: int,
-    off_depth: float | None,
 ) -> list[dict]:
     ranked: list[tuple[tuple, dict]] = []
-    # Oversample combinations: contiguous-jump filtering drops many fine combos.
+    # Oversample combinations: contiguous-jump filtering drops many combos.
     pool = max(max_tracks * 8, max_tracks)
-    for runs in (fine_runs, coarse_runs):
+    for runs in run_groups:
+        if not runs or any(not run.slots for run in runs):
+            continue
         for combo in combinations(runs, pool):
             if not combo_valid(runs, combo):
                 continue
-            built = build_track(samples, runs, combo, off_depth)
+            built = build_track(samples, runs, combo)
             ranked.append((rank_track(built), built))
     ranked.sort(key=lambda item: item[0])
 
@@ -138,12 +138,11 @@ def combo_rank(combo: tuple[int, ...], pinned: list[tuple[int, ...]]) -> tuple:
 
 
 def rank_track(built: dict) -> tuple:
-    return (built["cost"], built["slot_sum"])
+    # Prefer readings that cover more on samples, then lower jump cost.
+    return (-built["on_covered"], built["cost"], built["slot_sum"])
 
 
-def build_track(
-    samples: list[Sample], runs: list[Run], combo: tuple[int, ...], off_depth: float | None
-) -> dict:
+def build_track(samples: list[Sample], runs: list[Run], combo: tuple[int, ...]) -> dict:
     choice: list[Slot | None] = [None] * len(samples)
     slot_sum = 0.0
     for run, rank in zip(runs, combo):
@@ -159,10 +158,12 @@ def build_track(
         # Contiguous jumps are capped by combo_valid; off may still cross many layers.
         cost += abs(left.slot_depth - right.slot_depth)
 
-    segments = segments_for_track(samples, runs, combo, choice, off_depth)
+    on_covered = sum(1 for sample, slot in zip(samples, choice) if sample.on and slot is not None)
+    segments = segments_for_track(samples, runs, combo, choice)
     return {
         "cost": round(cost, 4),
         "slot_sum": slot_sum,
+        "on_covered": on_covered,
         "summary": summary_for(segments),
         "segments": segments,
         "breaks": [],
@@ -174,18 +175,29 @@ def segments_for_track(
     runs: list[Run],
     combo: tuple[int, ...],
     choice: list[Slot | None],
-    off_depth: float | None,
 ) -> list[dict]:
     segments: list[dict] = []
     current: dict | None = None
     previous: dict | None = None
     for index, sample in enumerate(samples):
-        described = describe_sample(samples, runs, combo, choice, index, off_depth)
+        described = describe_sample(samples, runs, combo, choice, index)
         if described is None:
+            # This cut does not own the sample. Close the segment so the line
+            # does not draw across a span that belongs to another subject.
+            if sample.on and current is not None:
+                segments.append(close_segment(current))
+                current = None
+                previous = None
             continue
         if current is None:
             current = open_segment(described, None)
-        elif (described["relation"], described["label"]) != (current["relation"], current["label"]):
+        elif (described["relation"], described["label"], tuple(described["layer_ids"])) != (
+            current["relation"],
+            current["label"],
+            tuple(current["layer_ids"]),
+        ):
+            # Same band label can belong to two subjects (carpet front and tea
+            # behind are both 1-2). Keep the segment on the subject that owns it.
             segments.append(close_segment(current))
             current = open_segment(described, previous)
         else:
@@ -204,7 +216,6 @@ def describe_sample(
     combo: tuple[int, ...],
     choice: list[Slot | None],
     index: int,
-    off_depth: float | None,
 ) -> dict | None:
     sample = samples[index]
     slot = choice[index]
@@ -220,7 +231,7 @@ def describe_sample(
         }
     if sample.on:
         return None
-    depth = off_slot_depth(runs, combo, index, off_depth)
+    depth = off_slot_depth(runs, combo, index)
     if depth is None:
         return None
     return {
@@ -234,11 +245,12 @@ def describe_sample(
     }
 
 
-def off_slot_depth(
-    runs: list[Run], combo: tuple[int, ...], index: int, off_depth: float | None
-) -> float | None:
-    if off_depth is not None:
-        return off_depth
+def off_slot_depth(runs: list[Run], combo: tuple[int, ...], index: int) -> float | None:
+    """Depth of a blank sample: interpolate between the on bands on either side.
+
+    A blank with only one neighboring on run stays at that run's depth, so the
+    stroke meets the band in Z. A stroke that never hits a subject has no run.
+    """
     previous: tuple[Run, Slot] | None = None
     nxt: tuple[Run, Slot] | None = None
     for run, rank in zip(runs, combo):

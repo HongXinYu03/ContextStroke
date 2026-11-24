@@ -41,7 +41,7 @@
       "file": "layer-3.png",
       "x": 944,
       "y": 1257,
-      "depth": 3,
+      "depth": 2,
       "scale": 0.7475,
       "background": false
     },
@@ -51,7 +51,7 @@
       "file": "layer-4.png",
       "x": 147,
       "y": 1055,
-      "depth": 2,
+      "depth": 3,
       "scale": 0.8399,
       "background": false
     },

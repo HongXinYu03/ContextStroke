@@ -60,7 +60,7 @@ def test_background_alone_is_off_and_subjects_are_on():
     assert any(sample["on"] and any(hit["id"] == "sofa" for hit in sample["hits"]) for sample in across["samples"])
     assert "空白" in across["tracks"][0]["summary"]
     assert across["tracks"][0]["segments"][0]["relation"] == "off"
-    assert across["tracks"][0]["segments"][0]["slot_depth"] == 2.5
+    assert across["tracks"][0]["segments"][0]["slot_depth"] == 0.5
 
 
 def test_single_layer_offers_both_bands_and_prefers_the_nearer():
@@ -103,6 +103,22 @@ def test_gap_of_one_missing_layer_still_connects():
     assert result["tracks"][0]["cost"] == 1
     assert "1-2" in result["tracks"][0]["summary"]
     assert "2-3" in result["tracks"][0]["summary"]
+
+
+def test_off_between_bands_interpolates_in_depth():
+    """Blank between two subjects ramps from one band to the other, not the background."""
+    background = _layer("wall", "背景墙", 8, 400, 200, (0, 0, 400, 200))
+    background.background = True
+    near = _layer("near", "近处", 1, 400, 200, (0, 40, 80, 80))
+    far = _layer("far", "远处", 3, 400, 200, (160, 40, 80, 80))
+    result = solve(_scene([background, near, far]), [(40, 80), (200, 80)])
+    assert result["tracks"][0]["cost"] == 1
+    off = next(segment for segment in result["tracks"][0]["segments"] if segment["relation"] == "off")
+    depths = [point["slot_depth"] for point in off["points"]]
+    assert depths[0] < 1.7
+    assert depths[-1] > 2.3
+    assert all(left <= right + 1e-6 for left, right in zip(depths, depths[1:]))
+    assert max(depths) - min(depths) > 0.5
 
 
 def test_off_may_cross_large_depth_jumps():
@@ -266,11 +282,17 @@ def test_front_subject_constrains_only_spans_it_participates_in():
         tea_segments = [segment for segment in covering(*point) if "table" in segment["layer_ids"]]
         assert tea_segments
         assert {segment["label"] for segment in tea_segments} <= {"0-1", "1-2"}
-    # Rear envelope still reads the tea-table samples as carpet, without tea.
-    assert any(
-        "carpet" in segment["layer_ids"] and "table" not in segment["layer_ids"]
-        for segment in covering(160, 200)
-    )
+    # Tea cut keeps tea bands. Carpet stays hit under the tea, so its cut is the
+    # whole carpet stroke at carpet front or carpet behind.
+    on_table = covering(160, 200)
+    tea_on_table = [segment for segment in on_table if "table" in segment["layer_ids"]]
+    carpet_on_table = [
+        segment for segment in on_table if segment["layer_ids"] == ["carpet"]
+    ]
+    assert tea_on_table
+    assert {segment["label"] for segment in tea_on_table} <= {"0-1", "1-2"}
+    assert carpet_on_table
+    assert {segment["label"] for segment in carpet_on_table} <= {"1-2", "2-3"}
     # Sofa span is outside the tea cut.
     sofa_segments = covering(80, 80)
     assert sofa_segments
@@ -278,8 +300,89 @@ def test_front_subject_constrains_only_spans_it_participates_in():
     assert {segment["label"] for segment in sofa_segments} <= {"2-3", "3-4"}
 
 
-def test_wide_gap_uses_nested_fine_and_rear_coarse_bands():
-    """Fully overlapping near+far: fine around near, coarse around far."""
+def test_deeper_contour_keeps_the_span_it_opens():
+    """Shelf overlapping the sofa: the span past the shelf stays on the shelf in every candidate."""
+    sofa = _layer("sofa", "沙发", 7, 400, 200, (100, 40, 200, 80))
+    shelf = _layer("shelf", "黑色架子", 8, 400, 200, (40, 40, 120, 80))
+    result = solve(_scene([sofa, shelf]), [(60, 80), (130, 80), (240, 80)])
+    assert result["status"] == "ok"
+
+    def covering(x):
+        found = []
+        for track in result["tracks"]:
+            for segment in track["segments"]:
+                if segment["relation"] != "band":
+                    continue
+                if any(abs(point["x"] - x) <= 12 for point in segment["points"]):
+                    found.append(segment)
+        return found
+
+    past_shelf = covering(240)
+    assert past_shelf
+    assert {segment["label"] for segment in past_shelf} <= {"7-8", "8-9"}
+    assert all("shelf" in segment["layer_ids"] for segment in past_shelf)
+    assert any(segment["label"] in {"7-8", "8-9"} for segment in covering(60))
+    # A shelf cut never mixes sofa-front into the same candidate.
+    for track in result["tracks"]:
+        labels = {
+            segment["label"]
+            for segment in track["segments"]
+            if segment["relation"] == "band"
+        }
+        covers_past = any(
+            segment["relation"] == "band"
+            and any(abs(point["x"] - 240) <= 12 for point in segment["points"])
+            for segment in track["segments"]
+        )
+        if covers_past:
+            assert labels <= {"7-8", "8-9"}
+
+
+def test_off_cut_by_an_overlapping_contour_stays_with_that_subject():
+    """A shelf hollow and the blank after its silhouette still keep the sofa span on the shelf."""
+    sofa = _layer("sofa", "沙发", 7, 400, 220, (100, 80, 180, 80))
+    shelf = _layer("shelf", "黑色架子", 8, 400, 220, (20, 40, 140, 80))
+    shelf.mask[40:120, 45:75] = 0
+    # Through the shelf hollow, then blank past the silhouette, then the sofa.
+    result = solve(_scene([sofa, shelf], 400, 220), [(30, 55), (60, 55), (90, 55), (170, 55), (200, 120)])
+    assert result["status"] == "ok"
+    on_keys = []
+    for sample in result["samples"]:
+        key = tuple(sorted(hit["id"] for hit in sample["hits"])) if sample["on"] else ("off",)
+        if not on_keys or on_keys[-1] != key:
+            on_keys.append(key)
+    assert ("off",) in on_keys
+    assert ("shelf",) in on_keys
+    assert ("sofa",) in on_keys
+
+    past_shelf = []
+    for track in result["tracks"]:
+        for segment in track["segments"]:
+            if segment["relation"] != "band":
+                continue
+            if any(abs(point["x"] - 200) <= 15 and abs(point["y"] - 120) <= 15 for point in segment["points"]):
+                past_shelf.append(segment)
+    assert past_shelf
+    assert {segment["label"] for segment in past_shelf} <= {"7-8", "8-9"}
+    assert all("shelf" in segment["layer_ids"] for segment in past_shelf)
+    for track in result["tracks"]:
+        covers_past = any(
+            segment["relation"] == "band"
+            and any(abs(point["x"] - 200) <= 15 and abs(point["y"] - 120) <= 15 for point in segment["points"])
+            for segment in track["segments"]
+        )
+        if not covers_past:
+            continue
+        labels = {
+            segment["label"]
+            for segment in track["segments"]
+            if segment["relation"] == "band"
+        }
+        assert labels <= {"7-8", "8-9"}
+
+
+def test_fully_overlapping_stack_keeps_each_subject_whole():
+    """Near and far are both hit the whole way: each cut is that subject only."""
     near = _layer("near", "近处", 1, 200, 80, (0, 0, 200, 80))
     far = _layer("far", "远处", 4, 200, 80, (0, 0, 200, 80))
     result = solve(_scene([near, far], 200, 80), [(20, 40), (180, 40)])
@@ -297,3 +400,96 @@ def test_wide_gap_uses_nested_fine_and_rear_coarse_bands():
     }
     assert depths == {0.5, 1.5, 3.5, 4.5}
     assert labels == {"0-1", "1-2", "3-4", "4-5"}
+    for track in result["tracks"]:
+        track_labels = {
+            segment["label"]
+            for segment in track["segments"]
+            if segment["relation"] == "band"
+        }
+        assert track_labels <= {"0-1", "1-2"} or track_labels <= {"3-4", "4-5"}
+
+
+def test_tea_table_and_sofa_are_separate_whole_cuts():
+    """Sofa stays hit under the tea table, so its cut moves the whole stroke."""
+    sofa = _layer("sofa", "沙发", 7, 400, 200, (40, 40, 300, 120))
+    tea = _layer("tea", "棕色茶几", 5, 400, 200, (120, 55, 160, 90))
+    result = solve(_scene([sofa, tea]), [(80, 100), (200, 100), (300, 100)])
+    assert result["status"] == "ok"
+
+    def labels_at(x):
+        found = []
+        for track in result["tracks"]:
+            for segment in track["segments"]:
+                if segment["relation"] != "band":
+                    continue
+                if any(abs(point["x"] - x) <= 12 for point in segment["points"]):
+                    found.append(segment)
+        return found
+
+    on_tea = labels_at(200)
+    tea_bands = [segment for segment in on_tea if "tea" in segment["layer_ids"]]
+    sofa_bands = [segment for segment in on_tea if "sofa" in segment["layer_ids"]]
+    assert tea_bands
+    assert {segment["label"] for segment in tea_bands} <= {"4-5", "5-6"}
+    assert sofa_bands
+    assert {segment["label"] for segment in sofa_bands} <= {"6-7", "7-8"}
+    for track in result["tracks"]:
+        labels = {
+            segment["label"]
+            for segment in track["segments"]
+            if segment["relation"] == "band"
+        }
+        assert labels <= {"4-5", "5-6"} or labels <= {"6-7", "7-8"}
+
+
+def test_hollow_segment_belongs_to_the_hollow_cut():
+    """The span inside the hole is a hollow-subject segment, not the rear cut."""
+    pink = _layer("pink", "粉色", 3, 400, 200, (0, 50, 400, 100))
+    green = _layer("green", "绿色镂空", 1, 400, 200, (100, 50, 200, 100))
+    green.mask[80:120, 160:240] = 0
+    result = solve(_scene([pink, green]), [(20, 100), (200, 100), (380, 100)])
+    assert result["status"] == "ok"
+
+    def at(x):
+        found = []
+        for track in result["tracks"]:
+            for segment in track["segments"]:
+                if segment["relation"] != "band":
+                    continue
+                if any(abs(point["x"] - x) <= 8 for point in segment["points"]):
+                    found.append((track, segment))
+        return found
+
+    hole = at(200)
+    assert any(segment["layer_ids"] == ["green"] and segment["label"] in {"0-1", "1-2"} for _track, segment in hole)
+    # Pink stays hit through the hole, so one pink candidate covers the whole stroke.
+    pink_whole = [
+        track
+        for track in result["tracks"]
+        if track["summary"] in {"2-3", "3-4"}
+        and all(segment["layer_ids"] == ["pink"] for segment in track["segments"] if segment["relation"] == "band")
+    ]
+    assert pink_whole
+    assert any(
+        any(abs(point["x"] - 20) <= 8 for point in segment["points"])
+        and any(abs(point["x"] - 200) <= 8 for point in segment["points"])
+        and any(abs(point["x"] - 360) <= 8 for point in segment["points"])
+        for track in pink_whole
+        for segment in track["segments"]
+    )
+    # Green can put the hole and the bar on different sides of the green subject.
+    assert any(
+        hole_segment["label"] != bar_segment["label"]
+        and hole_segment["layer_ids"] == ["green"]
+        and bar_segment["layer_ids"] == ["green"]
+        for track, hole_segment in at(200)
+        for _bar_track, bar_segment in at(120)
+        if track is _bar_track
+    )
+    for track in result["tracks"]:
+        labels = {
+            segment["label"]
+            for segment in track["segments"]
+            if segment["relation"] == "band"
+        }
+        assert labels <= {"0-1", "1-2"} or labels <= {"2-3", "3-4"}
