@@ -12,6 +12,7 @@ import {
   syncSceneDepths,
   updateLayer,
 } from './api'
+import { loadBandColors, saveBandColors, type BandColorMap } from './bands'
 import CandidatePanel from './components/CandidatePanel.vue'
 import LayerPanel from './components/LayerPanel.vue'
 import Viewport from './components/Viewport.vue'
@@ -32,6 +33,12 @@ const loading = ref(true)
 const inkGeneration = ref(0)
 const layerBusy = ref(false)
 const importInput = ref<HTMLInputElement | null>(null)
+const bandColors = ref<BandColorMap>(loadBandColors())
+
+function setBandColor(label: string, hex: string) {
+  bandColors.value = { ...bandColors.value, [label]: hex.toLowerCase() }
+  saveBandColors(bandColors.value)
+}
 
 let token = 0
 let transformTimer: ReturnType<typeof setTimeout> | null = null
@@ -383,6 +390,7 @@ watch(depthSignature, (value, previous) => {
         :mode="mode"
         :track="selectedTrack"
         :ink-generation="inkGeneration"
+        :band-colors="bandColors"
         @stroke="onStroke"
         @select="activeLayerId = $event"
         @transform="onTransform"
@@ -392,8 +400,10 @@ watch(depthSignature, (value, previous) => {
         :selected-id="selectedTrackId"
         :solving="solving"
         :error="error"
+        :band-colors="bandColors"
         @select="selectedTrackId = $event"
         @clear="clearStroke"
+        @set-band-color="setBandColor"
       />
     </main>
   </div>

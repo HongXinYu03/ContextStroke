@@ -5,7 +5,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { Line2 } from 'three/addons/lines/Line2.js'
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
-import { bandColor } from '../bands'
+import { bandColor, type BandColorMap } from '../bands'
 import type { LayerModel, Track, ViewMode } from '../types'
 
 const PLANE_WIDTH = 6
@@ -19,6 +19,7 @@ const props = defineProps<{
   mode: ViewMode
   track: Track | null
   inkGeneration: number
+  bandColors: BandColorMap
 }>()
 
 const emit = defineEmits<{
@@ -272,13 +273,18 @@ function updateLineResolution() {
 
 function addLine(positions: number[], color: number, dashed: boolean) {
   if (!renderer || positions.length < 6) return
+  const observe = props.mode === 'observe'
   const geometry = new LineGeometry()
   geometry.setPositions(positions)
   const material = new LineMaterial({
     color,
-    linewidth: 4,
-    depthTest: props.mode === 'observe',
+    linewidth: observe ? 3 : 4,
+    // Observe: test against layer depth so behind-band strokes stay under subjects.
+    // Fat Line2 is transparent by default and used to paint over planes; force opaque test.
+    depthTest: observe,
     depthWrite: false,
+    // Solid observe strokes must not skip the depth buffer (Line2 defaults to transparent).
+    transparent: dashed || !observe,
     dashed,
     dashSize: 6,
     gapSize: 4,
@@ -287,18 +293,25 @@ function addLine(positions: number[], color: number, dashed: boolean) {
   const line = new Line2(geometry, material)
   line.frustumCulled = false
   if (dashed) line.computeLineDistances()
-  line.renderOrder = 2
+  // Keep strokes with the default opaque pass when depth-testing; do not force on top.
+  line.renderOrder = observe ? 0 : 2
   strokes.add(line)
   lineMaterials.push(material)
 }
 
 function addDot(x: number, y: number, slotDepth: number, color: number) {
+  const observe = props.mode === 'observe'
   const mesh = new THREE.Mesh(
     new THREE.SphereGeometry(0.035, 14, 10),
-    new THREE.MeshBasicMaterial({ color, depthTest: props.mode === 'observe' }),
+    new THREE.MeshBasicMaterial({
+      color,
+      depthTest: observe,
+      depthWrite: false,
+      transparent: !observe,
+    }),
   )
   mesh.position.copy(pixelToWorld(x, y, slotDepth))
-  mesh.renderOrder = 3
+  mesh.renderOrder = observe ? 0 : 3
   strokes.add(mesh)
 }
 
@@ -323,7 +336,7 @@ function drawLive() {
 function drawTrack(track: Track) {
   for (const segment of track.segments) {
     const positions: number[] = []
-    const color = segment.relation === 'off' ? 0xb0b0b0 : bandColor(segment.label)
+    const color = segment.relation === 'off' ? 0xb0b0b0 : bandColor(segment.label, props.bandColors)
     for (const point of segment.points) {
       const world = pixelToWorld(point.x, point.y, strokeDepth(point.slotDepth))
       positions.push(world.x, world.y, world.z)
@@ -568,6 +581,11 @@ watch(
 )
 watch(
   () => props.track,
+  () => syncStroke(),
+  { deep: true },
+)
+watch(
+  () => props.bandColors,
   () => syncStroke(),
   { deep: true },
 )

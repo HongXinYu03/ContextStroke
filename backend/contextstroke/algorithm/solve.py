@@ -31,9 +31,9 @@ def solve(
     scene: Scene,
     stroke: list[tuple[float, float]] | list[list[float]],
     *,
-    spacing: float = 2.0,
+    spacing: float = 0.1,
     maximum: int = 4000,
-    max_tracks: int = 64,
+    max_tracks: int = 128,
 ) -> dict:
     resampled = resample_2d(stroke, spacing, maximum)
     if resampled is None:

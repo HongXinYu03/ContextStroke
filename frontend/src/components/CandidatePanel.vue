@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { bandHex } from '../bands'
+import { bandHex, type BandColorMap } from '../bands'
 import type { SolveResult, Track } from '../types'
 
 const props = defineProps<{
@@ -8,6 +8,7 @@ const props = defineProps<{
   selectedId: string | null
   solving: boolean
   error: string
+  bandColors: BandColorMap
 }>()
 
 const bands = computed(() => {
@@ -24,10 +25,16 @@ const bands = computed(() => {
 const emit = defineEmits<{
   select: [id: string]
   clear: []
+  'set-band-color': [label: string, hex: string]
 }>()
 
 function costText(track: Track): string {
   return track.cost === null ? '' : `深度变化 ${track.cost}`
+}
+
+function onColorInput(label: string, event: Event) {
+  const value = (event.target as HTMLInputElement).value
+  emit('set-band-color', label, value)
 }
 </script>
 
@@ -57,7 +64,16 @@ function costText(track: Track): string {
     </div>
     <ul class="legend">
       <li v-for="label in bands" :key="label">
-        <i class="swatch" :style="{ background: bandHex(label) }" />{{ label }}
+        <label class="swatch-wrap" :title="`调整 ${label} 颜色`">
+          <input
+            class="swatch-input"
+            type="color"
+            :value="bandHex(label, bandColors)"
+            @input="onColorInput(label, $event)"
+          />
+          <i class="swatch" :style="{ background: bandHex(label, bandColors) }" />
+        </label>
+        {{ label }}
       </li>
       <li><i class="swatch off" />空白（可跨层）</li>
     </ul>
@@ -153,10 +169,30 @@ h2 {
   align-items: center;
   gap: 6px;
 }
+.swatch-wrap {
+  position: relative;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.swatch-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
 .swatch {
-  width: 12px;
-  height: 12px;
+  display: block;
+  width: 14px;
+  height: 14px;
   border-radius: 3px;
+  border: 1px solid #555;
+  pointer-events: none;
 }
 .off {
   background: #b0b0b0;
