@@ -6,8 +6,9 @@ import itertools
 
 from .types import Run, Sample, Slot
 
+# 组合数量限制
 COMBO_LIMIT = 4096
-# Adjacent atomic spans with no off between them cannot jump more than one band.
+# 相邻原子跨度之间不能跳过一个深度带
 MAX_CONTIGUOUS_JUMP = 1.0 + 1e-6
 
 

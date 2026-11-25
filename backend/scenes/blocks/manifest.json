@@ -42,7 +42,7 @@
       "y": 1280,
       "scale": 0.7475,
       "background": false,
-      "depth": 2
+      "depth": 3
     },
     {
       "id": "layer-4",
@@ -52,7 +52,7 @@
       "y": 1055,
       "scale": 0.8399,
       "background": false,
-      "depth": 3
+      "depth": 2
     },
     {
       "id": "layer-5",
@@ -62,7 +62,7 @@
       "y": 26,
       "scale": 0.9437,
       "background": false,
-      "depth": 4
+      "depth": 7
     },
     {
       "id": "layer-6",
@@ -72,7 +72,7 @@
       "y": 979,
       "scale": 0.9437,
       "background": false,
-      "depth": 5
+      "depth": 4
     },
     {
       "id": "layer-7",
@@ -82,7 +82,7 @@
       "y": 1174,
       "scale": 0.8903,
       "background": false,
-      "depth": 6
+      "depth": 5
     },
     {
       "id": "layer-8",
@@ -92,7 +92,7 @@
       "y": 777,
       "scale": 0.9437,
       "background": false,
-      "depth": 7
+      "depth": 6
     },
     {
       "id": "layer-11",
