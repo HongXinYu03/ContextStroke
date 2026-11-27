@@ -23,6 +23,7 @@ export type SceneDetail = {
   name: string
   width: number
   height: number
+  metersPerPixel: number | null
   layers: LayerModel[]
 }
 
@@ -68,3 +69,78 @@ export type SolveResult = {
 }
 
 export type ViewMode = 'draw' | 'edit' | 'observe'
+
+export type MetricSource = 'manual' | 'estimated' | 'unknown'
+
+export type GraphMetric = {
+  width: number | null
+  height: number | null
+  widthSource: MetricSource
+  heightSource: MetricSource
+  source: MetricSource | 'mixed'
+}
+
+export type GraphNode = {
+  id: string
+  layerId: string
+  name: string
+  category: string
+  depth: number
+  center: [number, number]
+  centroid: [number, number]
+  bbox: [number, number, number, number]
+  pixelSize: [number, number]
+  areaPx: number
+  metric: GraphMetric
+  annotated: boolean
+}
+
+export type GraphOcclusion = {
+  occluded: boolean
+  occluder: string | null
+  overlapRatio: number
+  coplanarOverlap: boolean
+}
+
+export type GraphEdge = {
+  id: string
+  u: string
+  v: string
+  dx: number
+  dy: number
+  distance: number
+  angleDeg: number
+  direction: string
+  depthDelta: number
+  sameLayer: boolean
+  occlusion: GraphOcclusion
+}
+
+export type GraphFrame = {
+  x: number
+  y: number
+  width: number
+  height: number
+  source: 'background' | 'canvas'
+}
+
+export type UnmatchedAnnotation = {
+  layerId: string
+  layerName: string
+  seed: [number, number]
+  category: string | null
+  metricWidth: number | null
+  metricHeight: number | null
+}
+
+export type SceneGraph = {
+  frame: GraphFrame
+  metersPerPixel: number | null
+  metersPerPixelSource: 'manual' | 'derived' | null
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  unmatchedAnnotations: UnmatchedAnnotation[]
+}
+
+export type WorkspaceView = 'viewport' | 'split' | 'graph'
+export type GraphEdgeFilter = 'all' | 'occluded' | 'selected'

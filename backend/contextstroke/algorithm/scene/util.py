@@ -8,7 +8,7 @@ import re
 
 from PIL import Image
 
-from .model import Layer
+from .model import InstanceNote, Layer
 
 
 def next_depth(layers: list[dict]) -> int:
@@ -45,6 +45,77 @@ def read_scale(item: dict) -> float:
     if not math.isfinite(scale) or scale <= 0:
         return 1.0
     return scale
+
+
+MAX_METRIC = 1000.0
+MAX_METERS_PER_PIXEL = 10.0
+
+
+def read_metric(value, *, limit: float = MAX_METRIC) -> float | None:
+    """Positive finite number within ``limit``, else ``None``."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0 or number > limit:
+        return None
+    return number
+
+
+def read_category(value) -> str | None:
+    if value is None:
+        return None
+    cleaned = " ".join(str(value).split()).strip()
+    return cleaned[:40] or None
+
+
+def read_instance_notes(item: dict) -> tuple[InstanceNote, ...]:
+    raw = item.get("instances")
+    if not isinstance(raw, list):
+        return ()
+    notes: list[InstanceNote] = []
+    for entry in raw:
+        note = instance_note_from_dict(entry)
+        if note is not None:
+            notes.append(note)
+    return tuple(notes)
+
+
+def instance_note_from_dict(entry) -> InstanceNote | None:
+    if not isinstance(entry, dict):
+        return None
+    seed = entry.get("seed")
+    if not isinstance(seed, (list, tuple)) or len(seed) != 2:
+        return None
+    try:
+        sx, sy = int(seed[0]), int(seed[1])
+    except (TypeError, ValueError):
+        return None
+    if sx < 0 or sy < 0:
+        return None
+    return InstanceNote(
+        seed=(sx, sy),
+        category=read_category(entry.get("category")),
+        metric_width=read_metric(entry.get("metric_width")),
+        metric_height=read_metric(entry.get("metric_height")),
+    )
+
+
+def instance_note_to_dict(note: InstanceNote) -> dict:
+    payload: dict = {"seed": [int(note.seed[0]), int(note.seed[1])]}
+    if note.category is not None:
+        payload["category"] = note.category
+    if note.metric_width is not None:
+        payload["metric_width"] = note.metric_width
+    if note.metric_height is not None:
+        payload["metric_height"] = note.metric_height
+    return payload
+
+
+def clean_instances_payload(item: dict) -> list[dict]:
+    return [instance_note_to_dict(note) for note in read_instance_notes(item)]
 
 
 def pin_background_layers(layers: list[Layer]) -> list[Layer]:

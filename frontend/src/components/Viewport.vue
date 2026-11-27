@@ -1,12 +1,19 @@
 <script setup lang="ts">
-import { defineExpose, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineExpose, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { Line2 } from 'three/addons/lines/Line2.js'
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { bandColor, offColor, type BandColorMap } from '../bands'
-import type { LayerModel, Track, ViewMode } from '../types'
+import {
+  depthBounds,
+  depthColorHex,
+  depthColorNumber,
+  formatMetricSize,
+  metricSourceLabel,
+} from '../graphUtils'
+import type { GraphEdgeFilter, GraphNode, LayerModel, SceneGraph, Track, ViewMode } from '../types'
 
 export type ExportPngMode = 'occlude' | 'ghost' | 'clean' | 'stroke'
 
@@ -32,16 +39,31 @@ const props = defineProps<{
   inkGeneration: number
   bandColors: BandColorMap
   showLayerBorders: boolean
+  graph: SceneGraph | null
+  showGraph: boolean
+  edgeFilter: GraphEdgeFilter
+  activeNodeId: string | null
+  hoverNodeId: string | null
+  hoverEdgeId: string | null
 }>()
 
 const emit = defineEmits<{
   stroke: [points: number[][]]
   select: [id: string]
   transform: [payload: { id: string; x: number; y: number; scale: number }]
+  'select-node': [id: string | null]
+  'hover-node': [id: string | null]
 }>()
 
 const host = ref<HTMLDivElement | null>(null)
 const hint = ref('在画面上拖动绘制')
+const graphBounds = computed(() => depthBounds(props.graph))
+const labelRefs = new Map<string, HTMLElement>()
+
+function setLabelRef(id: string, el: unknown) {
+  if (el instanceof HTMLElement) labelRefs.set(id, el)
+  else labelRefs.delete(id)
+}
 
 type PlaneRecord = {
   mesh: THREE.Mesh
@@ -62,12 +84,19 @@ let editing = false
 let editOrigin: { x: number; y: number } | null = null
 let editStart: { x: number; y: number } | null = null
 let editLayer: LayerModel | null = null
+let pointerDownClient: { x: number; y: number } | null = null
+let lastHoveredNodeId: string | null = null
 
 const planes = new THREE.Group()
 const strokes = new THREE.Group()
+const graphGroup = new THREE.Group()
 const records = new Map<string, PlaneRecord>()
 const textures = new Map<string, THREE.Texture>()
 const lineMaterials: LineMaterial[] = []
+const graphLineMaterials: LineMaterial[] = []
+const graphNodeMeshes: THREE.Mesh[] = []
+const graphNodeWorldPos = new Map<string, THREE.Vector3>()
+const projVec = new THREE.Vector3()
 const raycaster = new THREE.Raycaster()
 const loader = new THREE.TextureLoader()
 
@@ -288,6 +317,214 @@ function updateLineResolution() {
   const width = renderer.domElement.clientWidth
   const height = renderer.domElement.clientHeight
   for (const material of lineMaterials) material.resolution.set(width, height)
+  for (const material of graphLineMaterials) material.resolution.set(width, height)
+}
+
+function clearGraph() {
+  for (const child of [...graphGroup.children]) {
+    graphGroup.remove(child)
+    child.traverse((obj) => {
+      const geometry = (obj as THREE.Object3D & { geometry?: THREE.BufferGeometry }).geometry
+      geometry?.dispose()
+      const material = (obj as THREE.Object3D & { material?: THREE.Material | THREE.Material[] }).material
+      if (Array.isArray(material)) material.forEach((item) => item.dispose())
+      else material?.dispose()
+    })
+  }
+  graphLineMaterials.length = 0
+  graphNodeMeshes.length = 0
+  graphNodeWorldPos.clear()
+}
+
+function graphNodePosition(node: GraphNode, frame: SceneGraph['frame']): THREE.Vector3 {
+  const canvasX = frame.x + node.center[0] * frame.width
+  const canvasY = frame.y + node.center[1] * frame.height
+  const { width, height } = worldSize()
+  const cw = props.canvasWidth > 0 ? props.canvasWidth : 1
+  const ch = props.canvasHeight > 0 ? props.canvasHeight : 1
+  const wx = (canvasX / cw - 0.5) * width
+  const wy = (0.5 - canvasY / ch) * height
+  let wz = 0.06
+  if (props.mode === 'observe') {
+    const layer = props.layers.find((item) => item.id === node.layerId)
+    wz = (layer ? planeZ(layer) : -node.depth * SPACING) + 0.04
+  }
+  return new THREE.Vector3(wx, wy, wz)
+}
+
+function addDashedRing(center: THREE.Vector3, radius: number, color: number, observe: boolean) {
+  if (!renderer) return
+  const segments = 32
+  const positions: number[] = []
+  for (let i = 0; i <= segments; i += 1) {
+    const theta = (i / segments) * Math.PI * 2
+    positions.push(center.x + Math.cos(theta) * radius, center.y + Math.sin(theta) * radius, center.z)
+  }
+  const geometry = new LineGeometry()
+  geometry.setPositions(positions)
+  const material = new LineMaterial({
+    color,
+    linewidth: 1.6,
+    depthTest: observe,
+    depthWrite: false,
+    transparent: true,
+    opacity: 0.85,
+    dashed: true,
+    dashSize: 0.045,
+    gapSize: 0.03,
+  })
+  material.resolution.set(renderer.domElement.clientWidth, renderer.domElement.clientHeight)
+  const line = new Line2(geometry, material)
+  line.frustumCulled = false
+  line.computeLineDistances()
+  line.renderOrder = observe ? 5 : 9
+  graphGroup.add(line)
+  graphLineMaterials.push(material)
+}
+
+function updateProjectedLabels() {
+  if (!renderer || !camera || !props.showGraph || !props.graph) return
+  const width = renderer.domElement.clientWidth
+  const height = renderer.domElement.clientHeight
+  if (width === 0 || height === 0) return
+  for (const [id, worldPos] of graphNodeWorldPos) {
+    const el = labelRefs.get(id)
+    if (!el) continue
+    projVec.copy(worldPos).project(camera)
+    if (projVec.z < -1 || projVec.z > 1) {
+      el.style.display = 'none'
+      continue
+    }
+    const sx = (projVec.x * 0.5 + 0.5) * width
+    const sy = (-projVec.y * 0.5 + 0.5) * height
+    el.style.display = ''
+    el.style.transform = `translate(${sx.toFixed(1)}px, ${sy.toFixed(1)}px)`
+  }
+}
+
+function syncGraph() {
+  clearGraph()
+  const graph = props.graph
+  if (!scene || !renderer || !props.showGraph || !graph || graph.nodes.length === 0) {
+    graphGroup.visible = false
+    return
+  }
+  graphGroup.visible = true
+  const observe = props.mode === 'observe'
+  const bounds = depthBounds(graph)
+  const activeNode = props.activeNodeId ? graph.nodes.find((n) => n.id === props.activeNodeId) ?? null : null
+  const activeLayer = activeNode?.layerId ?? null
+
+  for (const node of graph.nodes) {
+    const pos = graphNodePosition(node, graph.frame)
+    graphNodeWorldPos.set(node.id, pos)
+
+    const isActive = node.id === props.activeNodeId
+    const isHovered = node.id === props.hoverNodeId
+    const sameLayerSibling = Boolean(activeLayer && node.layerId === activeLayer && !isActive)
+    const color = depthColorNumber(node.depth, bounds.min, bounds.max)
+    const radius = isActive ? 0.115 : isHovered ? 0.098 : 0.08
+
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 18, 14),
+      new THREE.MeshBasicMaterial({
+        color,
+        depthTest: observe,
+        depthWrite: false,
+        transparent: !observe,
+      }),
+    )
+    sphere.position.copy(pos)
+    sphere.userData.nodeId = node.id
+    sphere.renderOrder = observe ? 4 : 8
+    graphGroup.add(sphere)
+    graphNodeMeshes.push(sphere)
+
+    if (isActive || isHovered) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(radius + 0.024, radius + 0.052, 28),
+        new THREE.MeshBasicMaterial({
+          color: isActive ? 0xffd166 : 0xffffff,
+          side: THREE.DoubleSide,
+          depthTest: observe,
+          depthWrite: false,
+          transparent: true,
+          opacity: isActive ? 0.96 : 0.85,
+        }),
+      )
+      ring.position.copy(pos)
+      ring.renderOrder = observe ? 5 : 9
+      graphGroup.add(ring)
+    } else if (sameLayerSibling) {
+      addDashedRing(pos, radius + 0.045, 0xffd166, observe)
+    }
+  }
+
+  for (const edge of graph.edges) {
+    if (props.edgeFilter === 'occluded') {
+      if (!edge.occlusion.occluded && !edge.occlusion.coplanarOverlap) continue
+    } else if (props.edgeFilter === 'selected') {
+      if (props.activeNodeId) {
+        if (edge.u !== props.activeNodeId && edge.v !== props.activeNodeId) continue
+      } else if (!edge.occlusion.occluded && !edge.occlusion.coplanarOverlap) {
+        continue
+      }
+    }
+
+    const pU = graphNodeWorldPos.get(edge.u)
+    const pV = graphNodeWorldPos.get(edge.v)
+    if (!pU || !pV) continue
+
+    const isHoveredEdge = props.hoverEdgeId === edge.id
+    const touchesActive = Boolean(props.activeNodeId && (edge.u === props.activeNodeId || edge.v === props.activeNodeId))
+    const touchesHover = Boolean(props.hoverNodeId && (edge.u === props.hoverNodeId || edge.v === props.hoverNodeId))
+    const highlighted = isHoveredEdge || touchesActive || touchesHover
+
+    let color = 0x94a3b8
+    let linewidth = 1.2
+    let opacity = 0.18
+    let dashed = true
+
+    if (edge.occlusion.occluded) {
+      color = highlighted ? 0xff8585 : 0xff6b6b
+      linewidth = highlighted ? 3.2 : 2.2
+      opacity = highlighted ? 0.96 : 0.82
+      dashed = false
+    } else if (edge.occlusion.coplanarOverlap) {
+      color = highlighted ? 0xffb876 : 0xf4a261
+      linewidth = highlighted ? 3.0 : 2.0
+      opacity = highlighted ? 0.95 : 0.78
+      dashed = false
+    } else if (highlighted) {
+      color = 0xcbd5e1
+      linewidth = isHoveredEdge ? 2.4 : 1.8
+      opacity = isHoveredEdge ? 0.95 : 0.78
+      dashed = true
+    }
+
+    const geometry = new LineGeometry()
+    geometry.setPositions([pU.x, pU.y, pU.z, pV.x, pV.y, pV.z])
+    const material = new LineMaterial({
+      color,
+      linewidth,
+      depthTest: observe,
+      depthWrite: false,
+      transparent: true,
+      opacity,
+      dashed,
+      dashSize: 0.12,
+      gapSize: 0.08,
+    })
+    material.resolution.set(renderer.domElement.clientWidth, renderer.domElement.clientHeight)
+    const line = new Line2(geometry, material)
+    line.frustumCulled = false
+    if (dashed) line.computeLineDistances()
+    line.renderOrder = observe ? (highlighted ? 3 : 2) : highlighted ? 6 : 5
+    graphGroup.add(line)
+    graphLineMaterials.push(material)
+  }
+
+  void nextTick(updateProjectedLabels)
 }
 
 function defaultLineStyle(dashed: boolean): LineStyle {
@@ -563,6 +800,8 @@ function exportPng(mode: ExportPngMode): string {
     borderWas.set(id, record.border.visible)
     record.border.visible = false
   }
+  const graphWasVisible = graphGroup.visible
+  graphGroup.visible = false
   try {
     const frame = exportContentFrame()
     const { width, height } = exportPixelSize(frame)
@@ -589,6 +828,7 @@ function exportPng(mode: ExportPngMode): string {
     for (const [id, record] of records) {
       record.border.visible = borderWas.get(id) ?? props.showLayerBorders
     }
+    graphGroup.visible = graphWasVisible
     camera.position.copy(snapshot.position)
     camera.up.copy(snapshot.up)
     camera.zoom = snapshot.zoom
@@ -648,7 +888,21 @@ function layerAt(pixel: { x: number; y: number }) {
   return null
 }
 
+function hitGraphNode(event: PointerEvent): string | null {
+  if (!renderer || !camera || !props.showGraph || graphNodeMeshes.length === 0) return null
+  const rect = renderer.domElement.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return null
+  const ndc = new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  )
+  raycaster.setFromCamera(ndc, camera)
+  const hit = raycaster.intersectObjects(graphNodeMeshes, false)[0]
+  return (hit?.object.userData.nodeId as string | undefined) ?? null
+}
+
 function onPointerDown(event: PointerEvent) {
+  pointerDownClient = { x: event.clientX, y: event.clientY }
   if (props.mode === 'observe') return
   const pixel = pointerPixel(event)
   if (!pixel) return
@@ -679,6 +933,14 @@ function onPointerDown(event: PointerEvent) {
 }
 
 function onPointerMove(event: PointerEvent) {
+  if (props.mode === 'observe' || (props.mode === 'edit' && !editing)) {
+    const hitId = hitGraphNode(event)
+    if (hitId !== lastHoveredNodeId) {
+      lastHoveredNodeId = hitId
+      emit('hover-node', hitId)
+    }
+    if (renderer) renderer.domElement.style.cursor = hitId ? 'pointer' : ''
+  }
   if (props.mode === 'edit') {
     if (!editing || !editLayer || !editOrigin || !editStart) return
     const pixel = pointerPixel(event)
@@ -709,11 +971,28 @@ function onPointerUp(event: PointerEvent) {
   } catch {
     // The pointer was not captured.
   }
+  const isClick =
+    pointerDownClient !== null &&
+    Math.hypot(event.clientX - pointerDownClient.x, event.clientY - pointerDownClient.y) < 5
+  pointerDownClient = null
+
+  if (props.mode === 'observe') {
+    if (isClick && props.showGraph) {
+      const hitId = hitGraphNode(event)
+      if (hitId) emit('select-node', hitId)
+      else if (props.activeNodeId) emit('select-node', null)
+    }
+    return
+  }
   if (props.mode === 'edit') {
     editing = false
     editLayer = null
     editOrigin = null
     editStart = null
+    if (isClick && props.showGraph) {
+      const hitId = hitGraphNode(event)
+      if (hitId) emit('select-node', hitId)
+    }
     return
   }
   if (!drawing) return
@@ -723,6 +1002,14 @@ function onPointerUp(event: PointerEvent) {
     livePoints = []
     syncStroke()
   }
+}
+
+function onPointerLeave() {
+  if (lastHoveredNodeId !== null) {
+    lastHoveredNodeId = null
+    emit('hover-node', null)
+  }
+  if (renderer) renderer.domElement.style.cursor = ''
 }
 
 function onWheel(event: WheelEvent) {
@@ -743,12 +1030,16 @@ function resize() {
   renderer.setSize(width, height, false)
   updateFrustum()
   updateLineResolution()
+  updateProjectedLabels()
 }
 
 function animate() {
   frameId = requestAnimationFrame(animate)
   if (props.mode === 'observe') controls?.update()
-  if (renderer && scene && camera) renderer.render(scene, camera)
+  if (renderer && scene && camera) {
+    renderer.render(scene, camera)
+    updateProjectedLabels()
+  }
 }
 
 function init() {
@@ -772,10 +1063,12 @@ function init() {
   scene.add(hitPlane)
   scene.add(planes)
   scene.add(strokes)
+  scene.add(graphGroup)
   renderer.domElement.addEventListener('pointerdown', onPointerDown)
   renderer.domElement.addEventListener('pointermove', onPointerMove)
   renderer.domElement.addEventListener('pointerup', onPointerUp)
   renderer.domElement.addEventListener('pointercancel', onPointerUp)
+  renderer.domElement.addEventListener('pointerleave', onPointerLeave)
   renderer.domElement.addEventListener('wheel', onWheel, { passive: false })
   renderer.domElement.style.touchAction = 'none'
   if (props.mode === 'observe') frameObserve()
@@ -783,6 +1076,7 @@ function init() {
   else frameDraw()
   syncPlanes()
   syncStroke()
+  syncGraph()
   resize()
   animate()
 }
@@ -802,9 +1096,11 @@ onBeforeUnmount(() => {
   renderer?.domElement.removeEventListener('pointermove', onPointerMove)
   renderer?.domElement.removeEventListener('pointerup', onPointerUp)
   renderer?.domElement.removeEventListener('pointercancel', onPointerUp)
+  renderer?.domElement.removeEventListener('pointerleave', onPointerLeave)
   renderer?.domElement.removeEventListener('wheel', onWheel)
   controls?.dispose()
   clearStrokes()
+  clearGraph()
   for (const record of records.values()) disposeMesh(record.mesh)
   records.clear()
   for (const texture of textures.values()) texture.dispose()
@@ -821,7 +1117,10 @@ watch(
           `${layer.id}:${layer.depth}:${layer.imageUrl}:${layer.x}:${layer.y}:${layer.scale}:${layer.visible ? 1 : 0}`,
       )
       .join('|'),
-  () => syncPlanes(),
+  () => {
+    syncPlanes()
+    syncGraph()
+  },
 )
 watch(
   () => props.activeLayerId,
@@ -862,10 +1161,12 @@ watch(
     editLayer = null
     editOrigin = null
     editStart = null
+    if (renderer) renderer.domElement.style.cursor = ''
     if (mode === 'observe') frameObserve()
     else if (mode === 'edit') frameEdit()
     else frameDraw()
     syncStroke()
+    syncGraph()
   },
 )
 watch(
@@ -876,13 +1177,50 @@ watch(
     else if (props.mode === 'edit') frameEdit()
     else frameDraw()
     syncStroke()
+    syncGraph()
   },
+)
+watch(
+  () => [
+    props.graph,
+    props.showGraph,
+    props.edgeFilter,
+    props.activeNodeId,
+    props.hoverNodeId,
+    props.hoverEdgeId,
+  ],
+  () => syncGraph(),
 )
 </script>
 
 <template>
   <div class="viewport">
     <div ref="host" class="host" />
+    <div v-if="showGraph && graph && graph.nodes.length > 0" class="graph-labels" aria-hidden="true">
+      <div
+        v-for="node in graph.nodes"
+        :key="node.id"
+        :ref="(el) => setLabelRef(node.id, el)"
+        class="graph-label"
+        :class="{ active: node.id === activeNodeId, hovered: node.id === hoverNodeId }"
+      >
+        <span class="label-pill">
+          <i
+            class="label-dot"
+            :style="{ background: depthColorHex(node.depth, graphBounds.min, graphBounds.max) }"
+          />
+          <span>{{ node.category }}</span>
+        </span>
+        <div v-if="node.id === activeNodeId || node.id === hoverNodeId" class="label-detail">
+          <div>D{{ node.depth }} · ({{ node.center[0].toFixed(2) }}, {{ node.center[1].toFixed(2) }})</div>
+          <div v-if="node.metric.width !== null || node.metric.height !== null">
+            {{ formatMetricSize(node.metric.width, node.metric.height) }}
+            ({{ metricSourceLabel(node.metric.source) }})
+          </div>
+          <div v-else>{{ Math.round(node.pixelSize[0]) }}×{{ Math.round(node.pixelSize[1]) }} px</div>
+        </div>
+      </div>
+    </div>
     <button v-if="mode === 'observe'" type="button" class="reset-view" @click="resetToDrawView">回正视角</button>
     <p class="hint">{{ hint }}</p>
   </div>
@@ -894,6 +1232,7 @@ watch(
   height: 100%;
   min-width: 0;
   background: #141414;
+  overflow: hidden;
 }
 .host {
   position: absolute;
@@ -903,6 +1242,68 @@ watch(
   display: block;
   width: 100%;
   height: 100%;
+}
+.graph-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+.graph-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  will-change: transform;
+  margin-left: 0;
+  margin-top: 12px;
+}
+.label-pill {
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid #3a3a3a;
+  background: rgb(18 18 18 / 82%);
+  color: #ececec;
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.graph-label.hovered .label-pill {
+  border-color: #ffffff;
+}
+.graph-label.active .label-pill {
+  border-color: #ffd166;
+  color: #ffd166;
+  background: rgb(28 24 14 / 90%);
+}
+.label-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.label-detail {
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  border-radius: 5px;
+  border: 1px solid #444;
+  background: rgb(16 16 16 / 90%);
+  color: #d4d4d4;
+  font-size: 10.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-align: center;
+}
+.graph-label.active .label-detail {
+  border-color: #ffd166;
 }
 .reset-view {
   position: absolute;

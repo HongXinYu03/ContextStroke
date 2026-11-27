@@ -33,10 +33,11 @@ backend/contextstroke/
     spans.py          # depth_passes：从深到浅，每层一次切割
     candidates.py     # 各次切割分开枚举、|Δ|≤1 过滤、summary 去重、track 几何
     types.py          # Hit / Sample / Slot / Run
-    scene/            # 清单、图层编辑、导入导出 zip
+    graph/            # 3D 场景图：instances（连通分量实例）· raster（掩膜重叠）· build（无向反对称边）· types
+    scene/            # 清单、图层编辑、实例标注、导入导出 zip
   server/api.py       # HTTP；算法不依赖 FastAPI
 frontend/src/
-  App.vue · api.ts · components/{Viewport,LayerPanel,CandidatePanel}
+  App.vue · api.ts · graphUtils.ts · components/{Viewport,LayerPanel,CandidatePanel,SceneGraphCanvas,GraphPanel}
 ```
 
 ## 求解流水线
@@ -76,8 +77,20 @@ frontend/src/
 - **已否决**：包络锁定；fine/coarse 双轨；一次切割里用最深命中回退（会把沙发前拼进架子切）。  
 - **已落地**：重叠分量内每深度只用该主体前/后；全程命中合成一整段；镂空孔段留在镂空那一次；更深轮廓认领；不相交岛屿只走全笔桥（`_component_count`）。  
 - **仍开放**：切段依据可视化。summary 相同的交替只留一条，所以绿框 32 种选择不会全部出现在列表里。
+- **场景图已知限制**：单层内彼此接触/粘连的多个物体在 alpha 掩膜上属于同一连通分量，自动实例分割无法拆开（需靠图层拆分或后续视觉模型）。
+
+## 3D 场景图规则
+
+详见 `docs/scene-graph.md`。
+
+- **节点**：非背景图层按自身 alpha 掩膜（`≥128`、降采样膨胀闭缝 + 8 连通）拆分为实例 `"{layer_id}:{k}"`，背景层不入图。坐标归一化到参考画框（优先背景层显示框，否则整画布）。
+- **无向反对称边**：每对实例只存一条边 `u--v`，规范方向为浅→深（`depth` 小者为 `u`，同深度按 `id`）。向量字段 `(dx, dy, angle_deg, direction, depth_delta)` 满足反对称，从另一端读取时取反并把角度加 180° 规约到 `(-180, 180]`。
+- **遮挡与共面重叠**：不同深度且掩膜有交集 → `occluded = true`（`occluder = u`）；同深度且掩膜有交集 → `coplanar_overlap = true`。
+- **度量尺寸**：支持场景级 `meters_per_pixel` 或单实例手填宽/高（米）；未手填时由已标注实例的中位数 `米/像素` 自动估算其余实例。
 
 ## 前端交互备忘
+
+- **场景图三视图联动**：顶栏支持 `场景 / 分栏 / 拓扑图` 切换与 `显示/隐藏图叠加` 开关；右侧栏支持 `深度候选 | 场景图` 页签切换。3D 视口叠加节点球、3D 空间边与 `pointer-events: none` 投影标签（绘制模式不拦截画笔，导出 PNG 自动隐藏）；独立 2D SVG 拓扑图支持空间坐标 / 深度分层布局、缩放平移与导出 SVG / PNG / JSON；右侧 `GraphPanel` 支持行内编辑类别、度量宽/高与场景 `米/像素`。
 
 - 图层面板「隐藏 / 显示」：仅前端 `LayerModel.visible`，不写清单；`applyScene` 保留本地可见性；视口与调整点选跳过隐藏层；**求解仍用全部图层掩膜**。  
 - 深度带 / 空白颜色：深度带默认按序号用黄金角色相拉开；空白（可跨层）默认可改；深度候选图例可点选改色（含空白），写入 `localStorage`。观察模式下笔触做深度测试；**重采样间距只影响采样密度，不负责三维遮挡**。  

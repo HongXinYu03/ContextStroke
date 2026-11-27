@@ -15,8 +15,11 @@ from . import paths
 from .edit import sync_depths
 from .store import load_manifest, save_manifest, scene_manifest
 from .util import (
+    MAX_METERS_PER_PIXEL,
+    clean_instances_payload,
     display_name,
     pin_background_manifest,
+    read_metric,
     read_scale,
     safe_download_stem,
     unique_scene_id,
@@ -42,6 +45,9 @@ def export_scene_zip(
         "height": int(data["height"]),
         "layers": [],
     }
+    meters_per_pixel = read_metric(data.get("meters_per_pixel"), limit=MAX_METERS_PER_PIXEL)
+    if meters_per_pixel is not None:
+        payload["meters_per_pixel"] = meters_per_pixel
     files: list[tuple[str, Path]] = []
     for item in data["layers"]:
         filename = str(item["file"])
@@ -50,18 +56,20 @@ def export_scene_zip(
         path = folder / filename
         if not path.is_file():
             raise FileNotFoundError(filename)
-        payload["layers"].append(
-            {
-                "id": str(item["id"]),
-                "name": str(item["name"]),
-                "file": filename,
-                "x": int(item.get("x", 0)),
-                "y": int(item.get("y", 0)),
-                "depth": int(item["depth"]),
-                "scale": read_scale(item),
-                "background": bool(item.get("background")),
-            }
-        )
+        layer_payload = {
+            "id": str(item["id"]),
+            "name": str(item["name"]),
+            "file": filename,
+            "x": int(item.get("x", 0)),
+            "y": int(item.get("y", 0)),
+            "depth": int(item["depth"]),
+            "scale": read_scale(item),
+            "background": bool(item.get("background")),
+        }
+        instances = clean_instances_payload(item)
+        if instances:
+            layer_payload["instances"] = instances
+        payload["layers"].append(layer_payload)
         files.append((filename, path))
 
     temp = Path(tempfile.mkdtemp(prefix="contextstroke-export-"))
@@ -130,19 +138,21 @@ def import_scene_zip(
             depth = int(item.get("depth", 1))
             if depth < 1:
                 raise ValueError("深度必须是正整数")
-            layers_payload.append(
-                {
-                    "id": layer_id,
-                    "name": display_name(str(item.get("name") or layer_id)),
-                    "file": filename,
-                    "x": int(item.get("x", 0)),
-                    "y": int(item.get("y", 0)),
-                    "depth": depth,
-                    "scale": read_scale(item),
-                    "background": bool(item.get("background")),
-                    "member": members[source_name],
-                }
-            )
+            layer_entry = {
+                "id": layer_id,
+                "name": display_name(str(item.get("name") or layer_id)),
+                "file": filename,
+                "x": int(item.get("x", 0)),
+                "y": int(item.get("y", 0)),
+                "depth": depth,
+                "scale": read_scale(item),
+                "background": bool(item.get("background")),
+                "member": members[source_name],
+            }
+            instances = clean_instances_payload(item)
+            if instances:
+                layer_entry["instances"] = instances
+            layers_payload.append(layer_entry)
 
         scene_label = display_name(name or str(raw.get("name") or "导入场景"))
         scene_id = unique_scene_id(root, scene_label)
@@ -169,6 +179,9 @@ def import_scene_zip(
                 "height": height,
                 "layers": stored_layers,
             }
+            meters_per_pixel = read_metric(raw.get("meters_per_pixel"), limit=MAX_METERS_PER_PIXEL)
+            if meters_per_pixel is not None:
+                manifest["meters_per_pixel"] = meters_per_pixel
             pin_background_manifest(manifest)
             save_manifest(folder, manifest)
         except Exception:

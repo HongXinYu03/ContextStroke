@@ -9,13 +9,19 @@ import math
 from PIL import Image
 
 from . import paths
-from .store import load_manifest, save_manifest, scene_manifest
+from .model import InstanceNote
+from .store import load_manifest, load_scene, save_manifest, scene_manifest
 from .util import (
+    MAX_METERS_PER_PIXEL,
     composite_at,
     display_name,
     file_unused,
+    instance_note_to_dict,
     next_depth,
     pin_background_manifest,
+    read_category,
+    read_instance_notes,
+    read_metric,
     read_scale,
     unique_token,
 )
@@ -211,5 +217,99 @@ def sync_depths(scene_id: str, depths: dict[str, int], root: Path | None = None)
         item["depth"] = depth
     data.pop("generator", None)
     pin_background_manifest(data)
+    save_manifest(folder, data)
+    return scene_manifest(scene_id, root)
+
+
+UNSET = object()
+
+
+def annotate_instance(
+    scene_id: str,
+    instance_id: str,
+    *,
+    category=UNSET,
+    metric_width=UNSET,
+    metric_height=UNSET,
+    root: Path | None = None,
+) -> None:
+    """Write category / metric size for one detected object instance.
+
+    Pass ``None`` to clear a field; leave it ``UNSET`` to keep it. The note is
+    tied to the instance by a layer-local seed pixel inside it.
+    """
+    from ..graph.instances import detect_instances, match_notes, seed_for
+
+    layer_id, _, _ = instance_id.rpartition(":")
+    if not layer_id:
+        raise ValueError("实例编号无效")
+    folder, data = load_manifest(scene_id, root)
+    scene = load_scene(scene_id, root)
+    layer = next((item for item in scene.layers if item.id == layer_id), None)
+    target = next((item for item in data["layers"] if str(item["id"]) == layer_id), None)
+    if layer is None or target is None:
+        raise ValueError("找不到实例所在的图层")
+    if layer.background:
+        raise ValueError("背景图层没有实例")
+    instances = detect_instances(layer)
+    instance = next((item for item in instances if item.id == instance_id), None)
+    if instance is None:
+        raise ValueError("找不到这个实例")
+
+    notes = list(read_instance_notes(target))
+    matched, _ = match_notes(instances, notes)
+    existing = matched.get(instance_id)
+    index = notes.index(existing) if existing is not None else None
+    base = existing or InstanceNote(seed=seed_for(instance))
+
+    def pick(value, current, reader, label):
+        if value is UNSET:
+            return current
+        if value is None:
+            return None
+        parsed = reader(value)
+        if parsed is None:
+            raise ValueError(label)
+        return parsed
+
+    if isinstance(category, str) and not category.strip():
+        category = None
+    updated = InstanceNote(
+        seed=base.seed,
+        category=pick(category, base.category, read_category, "类别无效"),
+        metric_width=pick(metric_width, base.metric_width, read_metric, "宽度必须在 0 到 1000 米之间"),
+        metric_height=pick(metric_height, base.metric_height, read_metric, "高度必须在 0 到 1000 米之间"),
+    )
+    empty = updated.category is None and updated.metric_width is None and updated.metric_height is None
+    if index is None:
+        if not empty:
+            notes.append(updated)
+    elif empty:
+        notes.pop(index)
+    else:
+        notes[index] = updated
+    if notes:
+        target["instances"] = [instance_note_to_dict(note) for note in notes]
+    else:
+        target.pop("instances", None)
+    save_manifest(folder, data)
+
+
+def update_scene_meta(
+    scene_id: str,
+    *,
+    meters_per_pixel=UNSET,
+    root: Path | None = None,
+) -> dict:
+    """Scene-level metadata. ``meters_per_pixel=None`` clears the manual scale."""
+    folder, data = load_manifest(scene_id, root)
+    if meters_per_pixel is not UNSET:
+        if meters_per_pixel is None:
+            data.pop("meters_per_pixel", None)
+        else:
+            parsed = read_metric(meters_per_pixel, limit=MAX_METERS_PER_PIXEL)
+            if parsed is None:
+                raise ValueError("米 / 像素必须在 0 到 10 之间")
+            data["meters_per_pixel"] = parsed
     save_manifest(folder, data)
     return scene_manifest(scene_id, root)

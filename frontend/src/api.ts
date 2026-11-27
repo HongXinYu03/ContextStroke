@@ -1,4 +1,17 @@
-import type { LayerModel, SceneDetail, SceneSummary, Segment, SolveResult, StrokePoint, Track } from './types'
+import type {
+  GraphEdge,
+  GraphNode,
+  LayerModel,
+  MetricSource,
+  SceneDetail,
+  SceneGraph,
+  SceneSummary,
+  Segment,
+  SolveResult,
+  StrokePoint,
+  Track,
+  UnmatchedAnnotation,
+} from './types'
 
 type RawLayer = {
   id: string
@@ -18,7 +31,76 @@ type RawScene = {
   name: string
   width: number
   height: number
+  meters_per_pixel?: number | null
   layers: RawLayer[]
+}
+
+type RawGraphMetric = {
+  width: number | null
+  height: number | null
+  width_source: MetricSource
+  height_source: MetricSource
+  source: MetricSource | 'mixed'
+}
+
+type RawGraphNode = {
+  id: string
+  layer_id: string
+  name: string
+  category: string
+  depth: number
+  center: [number, number]
+  centroid: [number, number]
+  bbox: [number, number, number, number]
+  pixel_size: [number, number]
+  area_px: number
+  metric: RawGraphMetric
+  annotated: boolean
+}
+
+type RawGraphOcclusion = {
+  occluded: boolean
+  occluder: string | null
+  overlap_ratio: number
+  coplanar_overlap: boolean
+}
+
+type RawGraphEdge = {
+  id: string
+  u: string
+  v: string
+  dx: number
+  dy: number
+  distance: number
+  angle_deg: number
+  direction: string
+  depth_delta: number
+  same_layer: boolean
+  occlusion: RawGraphOcclusion
+}
+
+type RawUnmatchedAnnotation = {
+  layer_id: string
+  layer_name: string
+  seed: [number, number]
+  category: string | null
+  metric_width: number | null
+  metric_height: number | null
+}
+
+type RawSceneGraph = {
+  frame: {
+    x: number
+    y: number
+    width: number
+    height: number
+    source: 'background' | 'canvas'
+  }
+  meters_per_pixel: number | null
+  meters_per_pixel_source: 'manual' | 'derived' | null
+  nodes: RawGraphNode[]
+  edges: RawGraphEdge[]
+  unmatched_annotations: RawUnmatchedAnnotation[]
 }
 
 type RawPoint = { sample: number; x: number; y: number; slot_depth: number }
@@ -98,8 +180,6 @@ function mapTrack(track: RawTrack): Track {
     cost: track.cost,
     selected: track.selected,
     summary: track.summary,
-    refIds: track.ref_ids ?? [],
-    refNames: track.ref_names ?? [],
     breaks: track.breaks,
     segments: track.segments.map((segment) => ({
       start: segment.start,
@@ -123,7 +203,74 @@ function mapScene(scene: RawScene): SceneDetail {
     name: scene.name,
     width: scene.width,
     height: scene.height,
+    metersPerPixel: scene.meters_per_pixel ?? null,
     layers: scene.layers.map(mapLayer),
+  }
+}
+
+function mapGraphNode(node: RawGraphNode): GraphNode {
+  return {
+    id: node.id,
+    layerId: node.layer_id,
+    name: node.name,
+    category: node.category,
+    depth: node.depth,
+    center: node.center,
+    centroid: node.centroid,
+    bbox: node.bbox,
+    pixelSize: node.pixel_size,
+    areaPx: node.area_px,
+    metric: {
+      width: node.metric.width,
+      height: node.metric.height,
+      widthSource: node.metric.width_source,
+      heightSource: node.metric.height_source,
+      source: node.metric.source,
+    },
+    annotated: node.annotated,
+  }
+}
+
+function mapGraphEdge(edge: RawGraphEdge): GraphEdge {
+  return {
+    id: edge.id,
+    u: edge.u,
+    v: edge.v,
+    dx: edge.dx,
+    dy: edge.dy,
+    distance: edge.distance,
+    angleDeg: edge.angle_deg,
+    direction: edge.direction,
+    depthDelta: edge.depth_delta,
+    sameLayer: edge.same_layer,
+    occlusion: {
+      occluded: edge.occlusion.occluded,
+      occluder: edge.occlusion.occluder,
+      overlapRatio: edge.occlusion.overlap_ratio,
+      coplanarOverlap: edge.occlusion.coplanar_overlap,
+    },
+  }
+}
+
+function mapUnmatched(item: RawUnmatchedAnnotation): UnmatchedAnnotation {
+  return {
+    layerId: item.layer_id,
+    layerName: item.layer_name,
+    seed: item.seed,
+    category: item.category,
+    metricWidth: item.metric_width,
+    metricHeight: item.metric_height,
+  }
+}
+
+function mapSceneGraph(raw: RawSceneGraph): SceneGraph {
+  return {
+    frame: raw.frame,
+    metersPerPixel: raw.meters_per_pixel,
+    metersPerPixelSource: raw.meters_per_pixel_source,
+    nodes: raw.nodes.map(mapGraphNode),
+    edges: raw.edges.map(mapGraphEdge),
+    unmatchedAnnotations: raw.unmatched_annotations.map(mapUnmatched),
   }
 }
 
@@ -238,4 +385,50 @@ export async function solveStroke(body: {
     discontinuities: result.discontinuities,
     tracks: result.tracks.map(mapTrack),
   }
+}
+
+export async function fetchSceneGraph(
+  sceneId: string,
+  depths?: Record<string, number>,
+): Promise<SceneGraph> {
+  const raw = await request<RawSceneGraph>(`/api/scenes/${encodeURIComponent(sceneId)}/graph`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(depths ? { depths } : {}),
+  })
+  return mapSceneGraph(raw)
+}
+
+export async function annotateInstance(
+  sceneId: string,
+  instanceId: string,
+  body: {
+    category?: string | null
+    metric_width?: number | null
+    metric_height?: number | null
+    depths?: Record<string, number>
+  },
+): Promise<SceneGraph> {
+  const raw = await request<RawSceneGraph>(
+    `/api/scenes/${encodeURIComponent(sceneId)}/instances/${encodeURIComponent(instanceId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+  return mapSceneGraph(raw)
+}
+
+export async function updateSceneMeta(
+  sceneId: string,
+  body: { meters_per_pixel: number | null },
+): Promise<SceneDetail> {
+  return mapScene(
+    await request<RawScene>(`/api/scenes/${encodeURIComponent(sceneId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
 }

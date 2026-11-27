@@ -1,0 +1,52 @@
+{
+  "id": "blocks",
+  "name": "色块场景",
+  "generator": "blocks-v1",
+  "width": 800,
+  "height": 600,
+  "layers": [
+    {
+      "id": "plant",
+      "name": "前景植物",
+      "file": "plant.png",
+      "x": 0,
+      "y": 0,
+      "depth": 1,
+      "instances": [
+        {
+          "seed": [
+            599,
+            209
+          ],
+          "category": "龟背竹",
+          "metric_width": 0.96
+        }
+      ]
+    },
+    {
+      "id": "table",
+      "name": "白色矮桌",
+      "file": "table.png",
+      "x": 0,
+      "y": 0,
+      "depth": 2
+    },
+    {
+      "id": "slippers",
+      "name": "紫色拖鞋",
+      "file": "slippers.png",
+      "x": 0,
+      "y": 0,
+      "depth": 2
+    },
+    {
+      "id": "picture",
+      "name": "背景画",
+      "file": "picture.png",
+      "x": 0,
+      "y": 0,
+      "depth": 3
+    }
+  ],
+  "meters_per_pixel": 0.005
+}

@@ -12,7 +12,7 @@ from PIL import Image
 from . import paths
 from .blocks import ensure_blocks_scene
 from .model import Layer, Scene
-from .util import pin_background_layers, read_scale
+from .util import MAX_METERS_PER_PIXEL, pin_background_layers, read_instance_notes, read_metric, read_scale
 
 
 def list_scenes(root: Path | None = None) -> list[dict[str, str]]:
@@ -60,10 +60,18 @@ def load_scene(scene_id: str, root: Path | None = None) -> Scene:
                 mask=alpha,
                 scale=read_scale(item),
                 background=bool(item.get("background")),
+                instances=read_instance_notes(item),
             )
         )
     layers = pin_background_layers(layers)
-    return Scene(id=scene_id, name=str(data.get("name") or scene_id), width=width, height=height, layers=layers)
+    return Scene(
+        id=scene_id,
+        name=str(data.get("name") or scene_id),
+        width=width,
+        height=height,
+        layers=layers,
+        meters_per_pixel=read_metric(data.get("meters_per_pixel"), limit=MAX_METERS_PER_PIXEL),
+    )
 
 
 def scene_manifest(scene_id: str, root: Path | None = None) -> dict:
@@ -73,6 +81,7 @@ def scene_manifest(scene_id: str, root: Path | None = None) -> dict:
         "name": scene.name,
         "width": scene.width,
         "height": scene.height,
+        "meters_per_pixel": scene.meters_per_pixel,
         "layers": [
             {
                 "id": layer.id,

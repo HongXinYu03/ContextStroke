@@ -2,23 +2,37 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   addLayer,
+  annotateInstance,
   deleteLayer,
   exportScene,
   fetchScene,
+  fetchSceneGraph,
   fetchScenes,
   importScene,
   mergeLayers,
   solveStroke,
   syncSceneDepths,
   updateLayer,
+  updateSceneMeta,
 } from './api'
 import { loadBandColors, saveBandColors, type BandColorMap } from './bands'
 import CandidatePanel from './components/CandidatePanel.vue'
+import GraphPanel from './components/GraphPanel.vue'
 import LayerPanel from './components/LayerPanel.vue'
+import SceneGraphCanvas from './components/SceneGraphCanvas.vue'
 import Viewport from './components/Viewport.vue'
 import type { ExportPngMode } from './components/Viewport.vue'
 import { pinBackground } from './depthOrder'
-import type { LayerModel, SceneDetail, SceneSummary, SolveResult, ViewMode } from './types'
+import type {
+  GraphEdgeFilter,
+  LayerModel,
+  SceneDetail,
+  SceneGraph,
+  SceneSummary,
+  SolveResult,
+  ViewMode,
+  WorkspaceView,
+} from './types'
 
 const scenes = ref<SceneSummary[]>([])
 const scene = ref<SceneDetail | null>(null)
@@ -39,6 +53,16 @@ const bandColors = ref<BandColorMap>(loadBandColors())
 const pngMenuOpen = ref(false)
 const pngExporting = ref(false)
 const showLayerBorders = ref(true)
+const showGraph = ref(true)
+const workspaceView = ref<WorkspaceView>('viewport')
+const rightTab = ref<'candidates' | 'graph'>('candidates')
+const graph = ref<SceneGraph | null>(null)
+const graphLoading = ref(false)
+const graphError = ref('')
+const graphEdgeFilter = ref<GraphEdgeFilter>('all')
+const activeNodeId = ref<string | null>(null)
+const hoverNodeId = ref<string | null>(null)
+const hoverEdgeId = ref<string | null>(null)
 
 function setBandColor(label: string, hex: string) {
   bandColors.value = { ...bandColors.value, [label]: hex.toLowerCase() }
@@ -46,9 +70,93 @@ function setBandColor(label: string, hex: string) {
 }
 
 let token = 0
+let graphToken = 0
+let graphTimer: ReturnType<typeof setTimeout> | null = null
 let transformTimer: ReturnType<typeof setTimeout> | null = null
 let transformToken = 0
 let depthTimer: ReturnType<typeof setTimeout> | null = null
+
+function setWorkspaceView(next: WorkspaceView) {
+  workspaceView.value = next
+  if (next === 'split' || next === 'graph') {
+    rightTab.value = 'graph'
+  }
+}
+
+function onSelectNode(id: string | null) {
+  activeNodeId.value = id
+  if (!id || !graph.value) return
+  const node = graph.value.nodes.find((item) => item.id === id)
+  if (node) activeLayerId.value = node.layerId
+}
+
+async function refreshGraph() {
+  const currentScene = scene.value
+  if (!currentScene) return
+  const current = ++graphToken
+  graphLoading.value = true
+  graphError.value = ''
+  try {
+    const next = await fetchSceneGraph(currentScene.id, currentDepths())
+    if (current !== graphToken) return
+    graph.value = next
+    if (activeNodeId.value && !next.nodes.some((n) => n.id === activeNodeId.value)) {
+      activeNodeId.value = null
+    }
+  } catch (reason) {
+    if (current !== graphToken) return
+    graphError.value = reason instanceof Error ? reason.message : '场景图加载失败'
+  } finally {
+    if (current === graphToken) graphLoading.value = false
+  }
+}
+
+function scheduleGraphRefresh(delay = 250) {
+  if (graphTimer) clearTimeout(graphTimer)
+  graphTimer = setTimeout(() => {
+    graphTimer = null
+    void refreshGraph()
+  }, delay)
+}
+
+async function onAnnotateInstance(payload: {
+  instanceId: string
+  category?: string | null
+  metric_width?: number | null
+  metric_height?: number | null
+}) {
+  const currentScene = scene.value
+  if (!currentScene) return
+  const current = ++graphToken
+  graphError.value = ''
+  try {
+    const { instanceId, ...fields } = payload
+    const next = await annotateInstance(currentScene.id, instanceId, {
+      ...fields,
+      depths: currentDepths(),
+    })
+    if (current !== graphToken) return
+    graph.value = next
+  } catch (reason) {
+    if (current !== graphToken) return
+    graphError.value = reason instanceof Error ? reason.message : '实例标注保存失败'
+  }
+}
+
+async function onUpdateMpp(metersPerPixel: number | null) {
+  const currentScene = scene.value
+  if (!currentScene) return
+  graphError.value = ''
+  try {
+    const updated = await updateSceneMeta(currentScene.id, { meters_per_pixel: metersPerPixel })
+    if (scene.value && scene.value.id === updated.id) {
+      scene.value = { ...scene.value, metersPerPixel: updated.metersPerPixel }
+    }
+    await refreshGraph()
+  } catch (reason) {
+    graphError.value = reason instanceof Error ? reason.message : '场景比例更新失败'
+  }
+}
 
 function currentDepths(): Record<string, number> {
   const depths: Record<string, number> = {}
@@ -123,12 +231,17 @@ async function loadScene(id: string) {
   stroke.value = []
   result.value = null
   selectedTrackId.value = null
+  graph.value = null
+  activeNodeId.value = null
+  hoverNodeId.value = null
+  hoverEdgeId.value = null
   inkGeneration.value += 1
   const next = await fetchScene(id)
   scene.value = next
   layers.value = next.layers
   activeLayerId.value = next.layers[0]?.id ?? null
   loading.value = false
+  void refreshGraph()
 }
 
 function keepLocalFields(next: SceneDetail): LayerModel[] {
@@ -178,6 +291,7 @@ async function persistTransform(payload: { id: string; x: number; y: number; sca
     if (currentToken !== transformToken) return
     applyScene(next)
     if (stroke.value.length >= 2) void solveCurrent()
+    scheduleGraphRefresh()
   } catch (reason) {
     if (currentToken !== transformToken) return
     error.value = reason instanceof Error ? reason.message : '图层位置更新失败'
@@ -202,6 +316,7 @@ async function onBackground(id: string) {
     applyScene(await updateLayer(current.id, id, { background: true }))
     activeLayerId.value = id
     if (stroke.value.length >= 2) void solveCurrent()
+    scheduleGraphRefresh()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '设置背景失败'
   } finally {
@@ -272,6 +387,7 @@ async function onAddLayer(file: File) {
     const next = await addLayer(current.id, file, depth)
     applyScene(next)
     activeLayerId.value = layers.value.find((layer) => !previous.has(layer.id))?.id ?? activeLayerId.value
+    scheduleGraphRefresh()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '添加图层失败'
   } finally {
@@ -290,6 +406,7 @@ async function onDeleteLayer() {
     if (!layers.value.some((layer) => layer.id === activeLayerId.value)) {
       activeLayerId.value = layers.value[0]?.id ?? null
     }
+    scheduleGraphRefresh()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '删除图层失败'
   } finally {
@@ -311,6 +428,7 @@ async function onMergeLayers(ids: string[]) {
   try {
     applyScene(await mergeLayers(current.id, [first, second], Math.min(left.depth, right.depth)))
     activeLayerId.value = layers.value.find((layer) => !previous.has(layer.id))?.id ?? layers.value[0]?.id ?? null
+    scheduleGraphRefresh()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '合并图层失败'
   } finally {
@@ -354,6 +472,7 @@ onMounted(async () => {
 watch(depthSignature, (value, previous) => {
   if (previous === undefined || value === previous) return
   if (stroke.value.length >= 2) void solveCurrent()
+  scheduleGraphRefresh()
 })
 </script>
 
@@ -388,6 +507,43 @@ watch(depthSignature, (value, previous) => {
       >
         {{ showLayerBorders ? '隐藏边框' : '显示边框' }}
       </button>
+      <button
+        type="button"
+        class="border-toggle"
+        :class="{ active: showGraph }"
+        :aria-pressed="showGraph"
+        :disabled="!scene"
+        :title="showGraph ? '隐藏 3D 视口中的场景图叠加' : '在 3D 视口中叠加场景图'"
+        @click="showGraph = !showGraph"
+      >
+        {{ showGraph ? '隐藏图叠加' : '显示图叠加' }}
+      </button>
+      <div class="modes view-switch" role="group" aria-label="工作区视图">
+        <button
+          type="button"
+          :class="{ active: workspaceView === 'viewport' }"
+          :aria-pressed="workspaceView === 'viewport'"
+          @click="setWorkspaceView('viewport')"
+        >
+          场景
+        </button>
+        <button
+          type="button"
+          :class="{ active: workspaceView === 'split' }"
+          :aria-pressed="workspaceView === 'split'"
+          @click="setWorkspaceView('split')"
+        >
+          分栏
+        </button>
+        <button
+          type="button"
+          :class="{ active: workspaceView === 'graph' }"
+          :aria-pressed="workspaceView === 'graph'"
+          @click="setWorkspaceView('graph')"
+        >
+          拓扑图
+        </button>
+      </div>
       <div class="scene-tools">
         <label v-if="scenes.length > 0" class="scene-picker">
           场景
@@ -470,31 +626,93 @@ watch(depthSignature, (value, previous) => {
         @background="onBackground"
         @toggle-visible="onToggleVisible"
       />
-      <Viewport
-        ref="viewportRef"
-        :layers="layers"
-        :canvas-width="scene.width"
-        :canvas-height="scene.height"
-        :active-layer-id="activeLayerId"
-        :mode="mode"
-        :track="selectedTrack"
-        :ink-generation="inkGeneration"
-        :band-colors="bandColors"
-        :show-layer-borders="showLayerBorders"
-        @stroke="onStroke"
-        @select="activeLayerId = $event"
-        @transform="onTransform"
-      />
-      <CandidatePanel
-        :result="result"
-        :selected-id="selectedTrackId"
-        :solving="solving"
-        :error="error"
-        :band-colors="bandColors"
-        @select="selectedTrackId = $event"
-        @clear="clearStroke"
-        @set-band-color="setBandColor"
-      />
+      <div class="center-stage" :class="workspaceView">
+        <Viewport
+          v-show="workspaceView !== 'graph'"
+          ref="viewportRef"
+          :layers="layers"
+          :canvas-width="scene.width"
+          :canvas-height="scene.height"
+          :active-layer-id="activeLayerId"
+          :mode="mode"
+          :track="selectedTrack"
+          :ink-generation="inkGeneration"
+          :band-colors="bandColors"
+          :show-layer-borders="showLayerBorders"
+          :graph="graph"
+          :show-graph="showGraph"
+          :edge-filter="graphEdgeFilter"
+          :active-node-id="activeNodeId"
+          :hover-node-id="hoverNodeId"
+          :hover-edge-id="hoverEdgeId"
+          @stroke="onStroke"
+          @select="activeLayerId = $event"
+          @transform="onTransform"
+          @select-node="onSelectNode"
+          @hover-node="hoverNodeId = $event"
+        />
+        <SceneGraphCanvas
+          v-if="workspaceView !== 'viewport'"
+          :graph="graph"
+          :scene-id="scene.id"
+          :edge-filter="graphEdgeFilter"
+          :active-node-id="activeNodeId"
+          :hover-node-id="hoverNodeId"
+          :hover-edge-id="hoverEdgeId"
+          @update:edge-filter="graphEdgeFilter = $event"
+          @select-node="onSelectNode"
+          @hover-node="hoverNodeId = $event"
+          @hover-edge="hoverEdgeId = $event"
+        />
+      </div>
+      <div class="right-pane">
+        <div class="right-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            :class="{ active: rightTab === 'candidates' }"
+            :aria-selected="rightTab === 'candidates'"
+            @click="rightTab = 'candidates'"
+          >
+            深度候选
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :class="{ active: rightTab === 'graph' }"
+            :aria-selected="rightTab === 'graph'"
+            @click="rightTab = 'graph'"
+          >
+            场景图
+            <span v-if="graph" class="tab-badge">{{ graph.nodes.length }}</span>
+          </button>
+        </div>
+        <CandidatePanel
+          v-if="rightTab === 'candidates'"
+          :result="result"
+          :selected-id="selectedTrackId"
+          :solving="solving"
+          :error="error"
+          :band-colors="bandColors"
+          @select="selectedTrackId = $event"
+          @clear="clearStroke"
+          @set-band-color="setBandColor"
+        />
+        <GraphPanel
+          v-else
+          :graph="graph"
+          :loading="graphLoading"
+          :error="graphError"
+          :active-node-id="activeNodeId"
+          :hover-node-id="hoverNodeId"
+          :hover-edge-id="hoverEdgeId"
+          @select-node="onSelectNode"
+          @hover-node="hoverNodeId = $event"
+          @hover-edge="hoverEdgeId = $event"
+          @annotate="onAnnotateInstance"
+          @update-mpp="onUpdateMpp"
+        />
+      </div>
     </main>
   </div>
 </template>
@@ -650,5 +868,65 @@ watch(depthSignature, (value, previous) => {
 .workspace > :last-child {
   border-right: 0;
   border-left: 1px solid #2a2a2a;
+}
+.center-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+.center-stage.split {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.center-stage.split > :first-child {
+  border-right: 1px solid #2a2a2a;
+}
+.right-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #1b1b1b;
+}
+.right-pane > :last-child {
+  flex: 1;
+  min-height: 0;
+}
+.right-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid #2a2a2a;
+  background: #171717;
+}
+.right-tabs button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #9f9f9f;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.right-tabs button.active {
+  color: #f0a202;
+  border-bottom-color: #f0a202;
+  background: #1f1d17;
+}
+.tab-badge {
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #2c2c2c;
+  color: #d5d5d5;
+  font-size: 11px;
+  font-weight: 600;
+}
+.right-tabs button.active .tab-badge {
+  background: #3a2f14;
+  color: #ffd166;
 }
 </style>

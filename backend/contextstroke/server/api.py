@@ -12,8 +12,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.background import BackgroundTask
 
+from contextstroke.algorithm.graph import build_scene_graph
 from contextstroke.algorithm.scene import (
     add_layer,
+    annotate_instance,
     apply_depths,
     delete_layer,
     export_scene_zip,
@@ -25,6 +27,7 @@ from contextstroke.algorithm.scene import (
     scene_manifest,
     sync_depths,
     update_layer,
+    update_scene_meta,
 )
 from contextstroke.algorithm.solve import solve
 
@@ -96,6 +99,34 @@ class SolveRequest(BaseModel):
             if len(point) != 2 or not all(math.isfinite(item) for item in point):
                 raise ValueError("笔触点必须是有限的二维坐标")
         return value
+
+
+def _check_depths(value: dict[str, int] | None) -> dict[str, int] | None:
+    if value is None:
+        return None
+    for name, depth in value.items():
+        if depth < 1:
+            raise ValueError(f"{name} 的深度必须是正整数")
+    return value
+
+
+class GraphRequest(BaseModel):
+    depths: dict[str, int] | None = None
+
+    @field_validator("depths")
+    @classmethod
+    def depths_are_positive(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        return _check_depths(value)
+
+
+class InstanceRequest(GraphRequest):
+    category: str | None = None
+    metric_width: float | None = None
+    metric_height: float | None = None
+
+
+class SceneMetaRequest(BaseModel):
+    meters_per_pixel: float | None = None
 
 
 @app.get("/api/health")
@@ -232,3 +263,41 @@ def post_solve(body: SolveRequest) -> dict:
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return solve(scene, body.stroke)
+
+
+def _graph(scene_id: str, depths: dict[str, int] | None) -> dict:
+    try:
+        scene = apply_depths(load_scene(scene_id), depths)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="找不到场景") from error
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error) or "场景清单无法读取") from error
+    return build_scene_graph(scene).to_dict()
+
+
+@app.post("/api/scenes/{scene_id}/graph")
+def post_graph(scene_id: str, body: GraphRequest | None = None) -> dict:
+    return _graph(scene_id, body.depths if body else None)
+
+
+@app.patch("/api/scenes/{scene_id}/instances/{instance_id}")
+def patch_instance(scene_id: str, instance_id: str, body: InstanceRequest) -> dict:
+    fields = {name: getattr(body, name) for name in ("category", "metric_width", "metric_height") if name in body.model_fields_set}
+    try:
+        annotate_instance(scene_id, instance_id, **fields)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="找不到场景") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return _graph(scene_id, body.depths)
+
+
+@app.patch("/api/scenes/{scene_id}")
+def patch_scene(scene_id: str, body: SceneMetaRequest) -> dict:
+    fields = {"meters_per_pixel": body.meters_per_pixel} if "meters_per_pixel" in body.model_fields_set else {}
+    try:
+        return update_scene_meta(scene_id, **fields)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="找不到场景") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

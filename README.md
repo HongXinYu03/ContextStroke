@@ -13,6 +13,7 @@
 - **深度带候选**：每一段连续的 on 选择一条深度带（如 `0-1`、`1-2`、`4-5`），枚举前后与交替组合；相邻段深度差超过 1 则断开
 - **边界贴合**：加密采样，并在掩膜轮廓上切换 on/off 颜色
 - **导入 / 导出**：把当前场景打成 zip 分享；可 **导出 PNG**（正视角）：真遮挡、遮挡可辨、无笔触纯场景、仅笔触（场景底图 + 连续几何线，不分 on/off）；带笔触项需先选深度候选
+- **3D 场景图可视化**：自动按前景图层掩膜拆分实例，构建无向反对称空间关系图（方位、距离、深度差、遮挡/共面重叠、度量尺寸估算）；支持 3D 视口叠加、独立 2D 拓扑图（空间坐标 / 深度分层、导出 SVG / PNG / JSON）与右侧检视标注面板三视图联动（概念见 **[docs/scene-graph.md](docs/scene-graph.md)**）
 
 ## 目录结构
 
@@ -20,14 +21,14 @@
 ContextStroke/
 ├── backend/                 # FastAPI + 求解算法
 │   ├── contextstroke/
-│   │   ├── algorithm/       # scene.py（场景/图层）· solve.py（笔触求解）
+│   │   ├── algorithm/       # scene/（场景/图层）· graph/（3D 场景图）· solve.py（笔触求解）
 │   │   └── server/          # api.py
 │   ├── scenes/              # 场景清单与 PNG（如 blocks）
 │   ├── tests/
 │   └── requirements.txt
 └── frontend/                # Vue 3 + Vite + three.js
     └── src/
-        ├── components/      # Viewport · LayerPanel · CandidatePanel
+        ├── components/      # Viewport · LayerPanel · CandidatePanel · SceneGraphCanvas · GraphPanel
         ├── api.ts
         └── ...
 ```
@@ -125,6 +126,9 @@ npm run type-check
 | `POST` | `/api/scenes/{id}/export` | 导出 zip（可带当前 `depths`） |
 | `POST` | `/api/scenes/import` | 导入 zip，创建新场景 |
 | `POST` | `/api/solve` | 求解笔触（`scene`、`depths`、`stroke`） |
+| `POST` | `/api/scenes/{id}/graph` | 构建当前场景的 3D 场景图（可传 `depths`） |
+| `PATCH` | `/api/scenes/{id}/instances/{instance_id}` | 标注实例 `category` / `metric_width` / `metric_height` 并返回最新场景图 |
+| `PATCH` | `/api/scenes/{id}` | 更新场景级元数据（如 `meters_per_pixel`） |
 
 场景数据在 `backend/scenes/<scene_id>/`：`manifest.json` + PNG。清单一旦存在，启动时不会用内置色块场景覆盖你的编辑。
 
