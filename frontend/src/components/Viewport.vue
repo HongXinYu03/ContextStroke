@@ -1,15 +1,26 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { defineExpose, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { Line2 } from 'three/addons/lines/Line2.js'
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
-import { bandColor, type BandColorMap } from '../bands'
+import { bandColor, offColor, type BandColorMap } from '../bands'
 import type { LayerModel, Track, ViewMode } from '../types'
+
+export type ExportPngMode = 'occlude' | 'ghost' | 'clean' | 'stroke'
 
 const PLANE_WIDTH = 6
 const SPACING = 0.42
+
+type LineStyle = {
+  depthTest: boolean
+  dashed: boolean
+  transparent: boolean
+  renderOrder: number
+  linewidth: number
+  opacity?: number
+}
 
 const props = defineProps<{
   layers: LayerModel[]
@@ -20,6 +31,7 @@ const props = defineProps<{
   track: Track | null
   inkGeneration: number
   bandColors: BandColorMap
+  showLayerBorders: boolean
 }>()
 
 const emit = defineEmits<{
@@ -182,6 +194,13 @@ function disposeMesh(mesh: THREE.Mesh) {
 function setBorder(record: PlaneRecord, active: boolean) {
   const material = record.border.material
   if (material instanceof THREE.LineBasicMaterial) material.color.set(active ? 0xffb703 : 0x6a6a6a)
+  record.border.visible = props.showLayerBorders
+}
+
+function syncBorderVisibility() {
+  for (const record of records.values()) {
+    record.border.visible = props.showLayerBorders
+  }
 }
 
 function createPlane(layer: LayerModel): PlaneRecord {
@@ -271,47 +290,63 @@ function updateLineResolution() {
   for (const material of lineMaterials) material.resolution.set(width, height)
 }
 
-function addLine(positions: number[], color: number, dashed: boolean) {
-  if (!renderer || positions.length < 6) return
+function defaultLineStyle(dashed: boolean): LineStyle {
   const observe = props.mode === 'observe'
+  return {
+    depthTest: observe,
+    dashed,
+    transparent: dashed || !observe,
+    renderOrder: observe ? 0 : 2,
+    linewidth: observe ? 3 : 4,
+  }
+}
+
+function addLine(positions: number[], color: number, style: LineStyle) {
+  if (!renderer || positions.length < 6) return
   const geometry = new LineGeometry()
   geometry.setPositions(positions)
   const material = new LineMaterial({
     color,
-    linewidth: observe ? 3 : 4,
-    // Observe: test against layer depth so behind-band strokes stay under subjects.
-    // Fat Line2 is transparent by default and used to paint over planes; force opaque test.
-    depthTest: observe,
+    linewidth: style.linewidth,
+    depthTest: style.depthTest,
     depthWrite: false,
-    // Solid observe strokes must not skip the depth buffer (Line2 defaults to transparent).
-    transparent: dashed || !observe,
-    dashed,
+    transparent: style.transparent,
+    opacity: style.opacity ?? 1,
+    dashed: style.dashed,
     dashSize: 6,
     gapSize: 4,
   })
   material.resolution.set(renderer.domElement.clientWidth, renderer.domElement.clientHeight)
   const line = new Line2(geometry, material)
   line.frustumCulled = false
-  if (dashed) line.computeLineDistances()
-  // Keep strokes with the default opaque pass when depth-testing; do not force on top.
-  line.renderOrder = observe ? 0 : 2
+  if (style.dashed) line.computeLineDistances()
+  line.renderOrder = style.renderOrder
   strokes.add(line)
   lineMaterials.push(material)
 }
 
-function addDot(x: number, y: number, slotDepth: number, color: number) {
+function addDot(
+  x: number,
+  y: number,
+  slotDepth: number,
+  color: number,
+  style?: { depthTest: boolean; transparent: boolean; renderOrder: number; opacity?: number },
+) {
   const observe = props.mode === 'observe'
+  const depthTest = style?.depthTest ?? observe
+  const transparent = style?.transparent ?? !observe
   const mesh = new THREE.Mesh(
     new THREE.SphereGeometry(0.035, 14, 10),
     new THREE.MeshBasicMaterial({
       color,
-      depthTest: observe,
+      depthTest,
       depthWrite: false,
-      transparent: !observe,
+      transparent,
+      opacity: style?.opacity ?? 1,
     }),
   )
   mesh.position.copy(pixelToWorld(x, y, slotDepth))
-  mesh.renderOrder = observe ? 0 : 3
+  mesh.renderOrder = style?.renderOrder ?? (observe ? 0 : 3)
   strokes.add(mesh)
 }
 
@@ -330,26 +365,244 @@ function drawLive() {
     const world = pixelToWorld(point.x, point.y, 0)
     positions.push(world.x, world.y, world.z)
   }
-  addLine(positions, 0xffffff, false)
+  addLine(positions, 0xffffff, defaultLineStyle(false))
+}
+
+function segmentPositions(segment: Track['segments'][number], useRealDepth: boolean): number[] {
+  const positions: number[] = []
+  for (const point of segment.points) {
+    const depth = useRealDepth ? point.slotDepth : strokeDepth(point.slotDepth)
+    const world = pixelToWorld(point.x, point.y, depth)
+    positions.push(world.x, world.y, world.z)
+  }
+  return positions
 }
 
 function drawTrack(track: Track) {
   for (const segment of track.segments) {
-    const positions: number[] = []
-    const color = segment.relation === 'off' ? 0xb0b0b0 : bandColor(segment.label, props.bandColors)
-    for (const point of segment.points) {
-      const world = pixelToWorld(point.x, point.y, strokeDepth(point.slotDepth))
-      positions.push(world.x, world.y, world.z)
-    }
+    const positions = segmentPositions(segment, false)
+    const color =
+      segment.relation === 'off' ? offColor(props.bandColors) : bandColor(segment.label, props.bandColors)
     if (segment.points.length === 1) {
       const only = segment.points[0]
       if (only) addDot(only.x, only.y, strokeDepth(only.slotDepth), color)
     } else {
-      addLine(positions, color, segment.relation === 'off')
+      addLine(positions, color, defaultLineStyle(segment.relation === 'off'))
     }
   }
   for (const point of track.breaks) addDot(point.x, point.y, props.mode === 'draw' ? 0 : 0.15, 0xff5a5a)
 }
+
+function drawTrackGeometryOnly(track: Track) {
+  /** Scene layers stay; stroke is one flat path — no on/off, no occlusion. */
+  const bySample = new Map<number, { x: number; y: number }>()
+  for (const segment of track.segments) {
+    for (const point of segment.points) {
+      bySample.set(point.sample, { x: point.x, y: point.y })
+    }
+  }
+  const ordered = [...bySample.entries()].sort((left, right) => left[0] - right[0]).map((entry) => entry[1])
+  if (ordered.length === 0) return
+  if (ordered.length === 1) {
+    const only = ordered[0]
+    if (only) {
+      addDot(only.x, only.y, 0, 0xffffff, {
+        depthTest: false,
+        transparent: false,
+        renderOrder: 10,
+      })
+    }
+    return
+  }
+  const positions: number[] = []
+  for (const point of ordered) {
+    const world = pixelToWorld(point.x, point.y, 0)
+    positions.push(world.x, world.y, world.z)
+  }
+  addLine(positions, 0xffffff, {
+    depthTest: false,
+    dashed: false,
+    transparent: false,
+    renderOrder: 10,
+    linewidth: 4,
+  })
+}
+
+function drawTrackForExport(track: Track, mode: ExportPngMode) {
+  const ghost = mode === 'ghost'
+  if (ghost) {
+    for (const segment of track.segments) {
+      const positions = segmentPositions(segment, true)
+      const color =
+        segment.relation === 'off' ? offColor(props.bandColors) : bandColor(segment.label, props.bandColors)
+      if (segment.points.length === 1) {
+        const only = segment.points[0]
+        if (only) {
+          addDot(only.x, only.y, only.slotDepth, color, {
+            depthTest: false,
+            transparent: true,
+            renderOrder: -1,
+            opacity: 0.45,
+          })
+        }
+      } else {
+        addLine(positions, color, {
+          depthTest: false,
+          dashed: true,
+          transparent: true,
+          renderOrder: -1,
+          linewidth: 3,
+          opacity: 0.55,
+        })
+      }
+    }
+  }
+  for (const segment of track.segments) {
+    const positions = segmentPositions(segment, true)
+    const color =
+      segment.relation === 'off' ? offColor(props.bandColors) : bandColor(segment.label, props.bandColors)
+    const dashed = segment.relation === 'off'
+    if (segment.points.length === 1) {
+      const only = segment.points[0]
+      if (only) {
+        addDot(only.x, only.y, only.slotDepth, color, {
+          depthTest: true,
+          transparent: false,
+          renderOrder: 0,
+        })
+      }
+    } else {
+      addLine(positions, color, {
+        depthTest: true,
+        dashed,
+        transparent: dashed,
+        renderOrder: 0,
+        linewidth: 3,
+      })
+    }
+  }
+  for (const point of track.breaks) {
+    addDot(point.x, point.y, 0.15, 0xff5a5a, {
+      depthTest: true,
+      transparent: false,
+      renderOrder: 0,
+    })
+  }
+}
+
+function applyFrontCamera() {
+  if (!camera || !controls) return
+  camera.zoom = 1
+  camera.position.set(0, 0, 8)
+  camera.up.set(0, 1, 0)
+  controls.target.set(0, 0, 0)
+  camera.lookAt(0, 0, 0)
+  updateFrustum()
+  controls.update()
+}
+
+function exportContentFrame() {
+  // Prefer the marked background layer. Scene canvas is often larger and leaves
+  // dark empty margins around that inset background.
+  const background = props.layers.find((layer) => layer.background && layer.visible)
+  if (background) {
+    const width = background.pixelWidth * background.scale
+    const height = background.pixelHeight * background.scale
+    return { x: background.x, y: background.y, width, height }
+  }
+  return { x: 0, y: 0, width: props.canvasWidth, height: props.canvasHeight }
+}
+
+function applyContentFrustum(frame: { x: number; y: number; width: number; height: number }) {
+  if (!camera) return
+  const full = worldSize()
+  const left = (frame.x / props.canvasWidth - 0.5) * full.width
+  const right = ((frame.x + frame.width) / props.canvasWidth - 0.5) * full.width
+  const top = (0.5 - frame.y / props.canvasHeight) * full.height
+  const bottom = (0.5 - (frame.y + frame.height) / props.canvasHeight) * full.height
+  camera.left = Math.min(left, right)
+  camera.right = Math.max(left, right)
+  camera.top = Math.max(top, bottom)
+  camera.bottom = Math.min(top, bottom)
+  camera.near = 0.01
+  camera.far = 200
+  camera.updateProjectionMatrix()
+}
+
+function exportPixelSize(frame: { width: number; height: number }) {
+  const maxEdge = 4096
+  let width = Math.max(1, Math.round(frame.width))
+  let height = Math.max(1, Math.round(frame.height))
+  const long = Math.max(width, height)
+  if (long > maxEdge) {
+    const scale = maxEdge / long
+    width = Math.max(1, Math.round(width * scale))
+    height = Math.max(1, Math.round(height * scale))
+  }
+  return { width, height }
+}
+
+function exportPng(mode: ExportPngMode): string {
+  if (!renderer || !scene || !camera || !controls) {
+    throw new Error('视口尚未就绪')
+  }
+  if (mode !== 'clean' && !props.track) {
+    throw new Error('请先选择一条深度候选')
+  }
+
+  const snapshot = {
+    position: camera.position.clone(),
+    up: camera.up.clone(),
+    target: controls.target.clone(),
+    zoom: camera.zoom,
+    controlsEnabled: controls.enabled,
+    pixelRatio: renderer.getPixelRatio(),
+  }
+  const borderWas = new Map<string, boolean>()
+  for (const [id, record] of records) {
+    borderWas.set(id, record.border.visible)
+    record.border.visible = false
+  }
+  try {
+    const frame = exportContentFrame()
+    const { width, height } = exportPixelSize(frame)
+    renderer.setPixelRatio(1)
+    renderer.setSize(width, height, false)
+    camera.zoom = 1
+    camera.position.set(0, 0, 8)
+    camera.up.set(0, 1, 0)
+    controls.target.set(0, 0, 0)
+    camera.lookAt(0, 0, 0)
+    applyContentFrustum(frame)
+    controls.update()
+    clearStrokes()
+    if (mode === 'stroke' && props.track) {
+      drawTrackGeometryOnly(props.track)
+      updateLineResolution()
+    } else if (mode !== 'clean' && props.track) {
+      drawTrackForExport(props.track, mode)
+      updateLineResolution()
+    }
+    renderer.render(scene, camera)
+    return renderer.domElement.toDataURL('image/png')
+  } finally {
+    for (const [id, record] of records) {
+      record.border.visible = borderWas.get(id) ?? props.showLayerBorders
+    }
+    camera.position.copy(snapshot.position)
+    camera.up.copy(snapshot.up)
+    camera.zoom = snapshot.zoom
+    controls.target.copy(snapshot.target)
+    controls.enabled = snapshot.controlsEnabled
+    camera.lookAt(controls.target)
+    renderer.setPixelRatio(snapshot.pixelRatio)
+    resize()
+    controls.update()
+    syncStroke()
+  }
+}
+
+defineExpose({ exportPng })
 
 function syncStroke() {
   clearStrokes()
@@ -504,7 +757,7 @@ function init() {
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0x141414)
   camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 200)
-  renderer = new THREE.WebGLRenderer({ antialias: true })
+  renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.outputColorSpace = THREE.SRGBColorSpace
   element.appendChild(renderer.domElement)
@@ -578,6 +831,10 @@ watch(
       if (record) setBorder(record, layer.id === props.activeLayerId)
     }
   },
+)
+watch(
+  () => props.showLayerBorders,
+  () => syncBorderVisibility(),
 )
 watch(
   () => props.track,

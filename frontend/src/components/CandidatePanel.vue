@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { bandHex, type BandColorMap } from '../bands'
+import { bandHex, OFF_LABEL, offHex, type BandColorMap } from '../bands'
 import type { SolveResult, Track } from '../types'
 
 const props = defineProps<{
@@ -75,7 +75,18 @@ function onColorInput(label: string, event: Event) {
         </label>
         {{ label }}
       </li>
-      <li><i class="swatch off" />空白（可跨层）</li>
+      <li>
+        <label class="swatch-wrap" title="调整空白段颜色">
+          <input
+            class="swatch-input"
+            type="color"
+            :value="offHex(bandColors)"
+            @input="onColorInput(OFF_LABEL, $event)"
+          />
+          <i class="swatch" :style="{ background: offHex(bandColors) }" />
+        </label>
+        空白（可跨层）
+      </li>
     </ul>
   </aside>
 </template>
@@ -193,9 +204,6 @@ h2 {
   border-radius: 3px;
   border: 1px solid #555;
   pointer-events: none;
-}
-.off {
-  background: #b0b0b0;
 }
 .break {
   background: #ff5a5a;

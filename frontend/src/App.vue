@@ -16,6 +16,7 @@ import { loadBandColors, saveBandColors, type BandColorMap } from './bands'
 import CandidatePanel from './components/CandidatePanel.vue'
 import LayerPanel from './components/LayerPanel.vue'
 import Viewport from './components/Viewport.vue'
+import type { ExportPngMode } from './components/Viewport.vue'
 import { pinBackground } from './depthOrder'
 import type { LayerModel, SceneDetail, SceneSummary, SolveResult, ViewMode } from './types'
 
@@ -33,7 +34,11 @@ const loading = ref(true)
 const inkGeneration = ref(0)
 const layerBusy = ref(false)
 const importInput = ref<HTMLInputElement | null>(null)
+const viewportRef = ref<InstanceType<typeof Viewport> | null>(null)
 const bandColors = ref<BandColorMap>(loadBandColors())
+const pngMenuOpen = ref(false)
+const pngExporting = ref(false)
+const showLayerBorders = ref(true)
 
 function setBandColor(label: string, hex: string) {
   bandColors.value = { ...bandColors.value, [label]: hex.toLowerCase() }
@@ -54,6 +59,34 @@ function currentDepths(): Record<string, number> {
 const selectedTrack = computed(
   () => result.value?.tracks.find((track) => track.id === selectedTrackId.value) ?? null,
 )
+
+const canExportPng = computed(() => Boolean(scene.value && !layerBusy.value && !pngExporting.value))
+const canExportStrokePng = computed(() => Boolean(canExportPng.value && selectedTrack.value))
+
+async function onExportPng(mode: ExportPngMode) {
+  if (!viewportRef.value || !scene.value) return
+  if (mode === 'clean') {
+    if (!canExportPng.value) return
+  } else if (!canExportStrokePng.value || !selectedTrack.value) {
+    return
+  }
+  pngMenuOpen.value = false
+  pngExporting.value = true
+  error.value = ''
+  try {
+    const dataUrl = viewportRef.value.exportPng(mode)
+    const anchor = document.createElement('a')
+    anchor.href = dataUrl
+    const suffix =
+      mode === 'clean' ? 'clean' : `track-${selectedTrack.value?.id ?? '0'}-${mode}`
+    anchor.download = `${scene.value.id}-${suffix}.png`
+    anchor.click()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '导出 PNG 失败'
+  } finally {
+    pngExporting.value = false
+  }
+}
 
 const depthSignature = computed(() => layers.value.map((layer) => `${layer.id}:${layer.depth}`).join('|'))
 
@@ -344,6 +377,17 @@ watch(depthSignature, (value, previous) => {
           观察
         </button>
       </div>
+      <button
+        type="button"
+        class="border-toggle"
+        :class="{ active: showLayerBorders }"
+        :aria-pressed="showLayerBorders"
+        :disabled="!scene"
+        :title="showLayerBorders ? '隐藏图层边框' : '显示图层边框'"
+        @click="showLayerBorders = !showLayerBorders"
+      >
+        {{ showLayerBorders ? '隐藏边框' : '显示边框' }}
+      </button>
       <div class="scene-tools">
         <label v-if="scenes.length > 0" class="scene-picker">
           场景
@@ -356,6 +400,50 @@ watch(depthSignature, (value, previous) => {
           </select>
         </label>
         <button type="button" :disabled="!scene || layerBusy" @click="onExportScene">导出场景</button>
+        <div class="png-export">
+          <button
+            type="button"
+            :disabled="!canExportPng"
+            title="导出正视角 PNG（可选带笔触或纯场景）"
+            @click="pngMenuOpen = !pngMenuOpen"
+          >
+            导出 PNG
+          </button>
+          <div v-if="pngMenuOpen" class="png-menu" role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              :disabled="!canExportStrokePng"
+              :title="canExportStrokePng ? '' : '请先选择一条深度候选'"
+              @click="onExportPng('occlude')"
+            >
+              真遮挡
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              :disabled="!canExportStrokePng"
+              :title="canExportStrokePng ? '' : '请先选择一条深度候选'"
+              @click="onExportPng('ghost')"
+            >
+              遮挡可辨
+            </button>
+            <button type="button" role="menuitem" @click="onExportPng('clean')">无笔触</button>
+            <button
+              type="button"
+              role="menuitem"
+              :disabled="!canExportStrokePng"
+              :title="
+                canExportStrokePng
+                  ? '场景底图 + 连续笔触几何（不分 on/off，无遮挡）'
+                  : '请先选择一条深度候选'
+              "
+              @click="onExportPng('stroke')"
+            >
+              仅笔触
+            </button>
+          </div>
+        </div>
         <button type="button" :disabled="layerBusy" @click="importInput?.click()">导入场景</button>
         <input
           ref="importInput"
@@ -383,6 +471,7 @@ watch(depthSignature, (value, previous) => {
         @toggle-visible="onToggleVisible"
       />
       <Viewport
+        ref="viewportRef"
         :layers="layers"
         :canvas-width="scene.width"
         :canvas-height="scene.height"
@@ -391,6 +480,7 @@ watch(depthSignature, (value, previous) => {
         :track="selectedTrack"
         :ink-generation="inkGeneration"
         :band-colors="bandColors"
+        :show-layer-borders="showLayerBorders"
         @stroke="onStroke"
         @select="activeLayerId = $event"
         @transform="onTransform"
@@ -452,6 +542,24 @@ watch(depthSignature, (value, previous) => {
   background: #f0a202;
   color: #1a1a1a;
 }
+.border-toggle {
+  padding: 6px 12px;
+  border: 1px solid #3d3d3d;
+  border-radius: 6px;
+  background: #2a2a2a;
+  color: #d5d5d5;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.border-toggle.active {
+  border-color: #f0a202;
+  color: #f0a202;
+}
+.border-toggle:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .scene-tools {
   margin-left: auto;
   display: flex;
@@ -459,6 +567,44 @@ watch(depthSignature, (value, previous) => {
   gap: 8px;
   color: #bdbdbd;
   font-size: 13px;
+}
+.png-export {
+  position: relative;
+}
+.png-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid #3d3d3d;
+  border-radius: 6px;
+  background: #1f1f1f;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+}
+.png-menu button {
+  width: 100%;
+  margin: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #ececec;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.png-menu button:hover:not(:disabled) {
+  background: #2c2618;
+  color: #f0a202;
+}
+.png-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .scene-picker select,
 .scene-tools button {

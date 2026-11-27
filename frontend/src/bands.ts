@@ -2,13 +2,26 @@
 const GOLDEN = 137.508
 const STORAGE_KEY = 'contextstroke.bandColors'
 
+/** Legend / storage key for off (blank) stroke segments. */
+export const OFF_LABEL = '空白'
+export const DEFAULT_OFF_HEX = '#b0b0b0'
+
 export type BandColorMap = Record<string, string>
 
 export function defaultBandHex(label: string): string {
+  if (label === OFF_LABEL) return DEFAULT_OFF_HEX
   const match = /^(\d+)-\d+$/.exec(label)
-  if (match?.[1] === undefined) return '#b0b0b0'
+  if (match?.[1] === undefined) return DEFAULT_OFF_HEX
   const index = Number(match[1])
   return hslToHex((index * GOLDEN) % 360, 72, 56)
+}
+
+export function offHex(overrides?: BandColorMap): string {
+  return bandHex(OFF_LABEL, overrides)
+}
+
+export function offColor(overrides?: BandColorMap): number {
+  return bandColor(OFF_LABEL, overrides)
 }
 
 export function bandHex(label: string, overrides?: BandColorMap): string {

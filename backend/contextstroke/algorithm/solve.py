@@ -3,11 +3,10 @@
 A sample is on only when it hits a subject mask. The background layer is
 visual only for hits: a point that touches nothing but the background stays
 off. While the stroke stays on, a change in the hit-set starts a new atomic
-span. Each depth that the stroke meets produces one cut, deepest first, and that
-cut uses only that subject's front or behind band. A subject hit the whole way
-is one segment. A hollow contour keeps the hole as its own segment on that
-hollow cut. A deeper contour that opens a span claims it. Real off between
-disjoint subjects may still bridge, each span staying with its front subject.
+span. Overlapping subjects get one cut per depth, deepest first, using only that
+subject's front or behind band. A hollow contour keeps its hole on that cut. A
+deeper contour that opens a span claims it. Disjoint subjects separated by real
+off share one full-stroke bridge instead of half cuts that drop the other on.
 """
 
 from __future__ import annotations

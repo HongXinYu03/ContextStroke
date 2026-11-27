@@ -1,14 +1,10 @@
 """On-span construction.
 
-Each depth that the stroke meets is one cut, deepest first. A cut only uses
-that subject's front band or behind band.
+Overlapping subjects: each depth is one cut, deepest first, using only that
+subject's front or behind band. Hollow contours keep the hole on that cut.
 
-A subject that stays hit the whole way is one segment: the entire stroke in
-front of it, or the entire stroke behind it. A hollow contour splits the
-stroke where that contour appears and disappears. The span inside the hole
-belongs to that hollow cut, not to the rear subject as its own segment. A
-deeper contour that opens a span still claims it; the shallower cut cannot
-rewrite the claim.
+Disjoint subjects separated by a real off gap: do not emit half cuts that drop
+the other subject's on spans. One full-stroke bridge keeps every on segment.
 """
 
 from __future__ import annotations
@@ -25,21 +21,25 @@ def hit_key(sample: Sample) -> tuple[str, ...]:
 def depth_passes(
     samples: list[Sample], overlaps: set[frozenset[str]] | None = None
 ) -> list[list[Run]]:
-    """One reading per depth. Each reading uses only that subject's front/behind."""
+    """Per-depth cuts for one overlapping component; bridge for disjoint islands."""
     spans = _raw_hitset_spans(samples)
     if not spans:
         return []
     span_hits = [list(samples[start].hits) for start, _end in spans]
-    claimed = _exclusive_claims(spans, span_hits, overlaps or set())
+    overlap_set = overlaps or set()
+    claimed = _exclusive_claims(spans, span_hits, overlap_set)
+    # Lamp then blank then picture: two islands. A lamp-only cut would hide the
+    # picture on segment. Overlapping stacks stay one component and still cut
+    # deepest-first.
+    if _component_count(spans, span_hits, overlap_set) > 1:
+        bridge = _bridge_runs(spans, span_hits, claimed)
+        return [bridge] if bridge else []
     depths = sorted({hit.depth for hits in span_hits for hit in hits}, reverse=True)
     passes = []
     for depth in depths:
         runs = _pass_runs(spans, span_hits, claimed, depth)
         if runs:
             passes.append(runs)
-    # Real off between subjects still needs one reading that can bridge them.
-    # Contiguous overlaps stay on the per-depth cuts only, so a shelf cut never
-    # mixes sofa-front into the same candidate.
     if _has_off_gap(spans):
         bridge = _bridge_runs(spans, span_hits, claimed)
         if bridge and bridge not in passes:
@@ -49,6 +49,32 @@ def depth_passes(
 
 def _has_off_gap(spans: list[tuple[int, int]]) -> bool:
     return any(left[1] + 1 != right[0] for left, right in zip(spans, spans[1:]))
+
+
+def _component_count(
+    spans: list[tuple[int, int]], span_hits: list[list[Hit]], overlaps: set[frozenset[str]]
+) -> int:
+    """How many stroke islands after joining contiguous or overlapping neighbors."""
+    if not spans:
+        return 0
+    parent = list(range(len(spans)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for index in range(len(spans) - 1):
+        contiguous = spans[index][1] + 1 == spans[index + 1][0]
+        if contiguous or _subjects_overlap(span_hits[index], span_hits[index + 1], overlaps):
+            union(index, index + 1)
+    return len({find(index) for index in range(len(spans))})
 
 
 def _raw_hitset_spans(samples: list[Sample]) -> list[tuple[int, int]]:

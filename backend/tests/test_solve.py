@@ -246,7 +246,7 @@ def test_contiguous_nested_stroke_keeps_narratives_separate():
 
 
 def test_front_subject_constrains_only_spans_it_participates_in():
-    """Sofa and carpet do not overlap. Tea constrains its own span and the neighbor it cuts."""
+    """Sofa is disjoint from carpet+tea. One bridge keeps every on segment."""
     sofa = _layer("sofa", "沙发", 3, 400, 300, (40, 20, 220, 110))
     carpet = _layer("carpet", "地毯", 2, 400, 300, (40, 160, 280, 110))
     table = _layer("table", "茶几", 1, 400, 300, (120, 90, 70, 120))
@@ -277,27 +277,53 @@ def test_front_subject_constrains_only_spans_it_participates_in():
                     found.append(segment)
         return found
 
-    # Tea constrains the carpet span it cuts and the span on the tea table.
-    for point in ((80, 200), (160, 200)):
-        tea_segments = [segment for segment in covering(*point) if "table" in segment["layer_ids"]]
-        assert tea_segments
-        assert {segment["label"] for segment in tea_segments} <= {"0-1", "1-2"}
-    # Tea cut keeps tea bands. Carpet stays hit under the tea, so its cut is the
-    # whole carpet stroke at carpet front or carpet behind.
-    on_table = covering(160, 200)
-    tea_on_table = [segment for segment in on_table if "table" in segment["layer_ids"]]
-    carpet_on_table = [
-        segment for segment in on_table if segment["layer_ids"] == ["carpet"]
-    ]
-    assert tea_on_table
-    assert {segment["label"] for segment in tea_on_table} <= {"0-1", "1-2"}
-    assert carpet_on_table
-    assert {segment["label"] for segment in carpet_on_table} <= {"1-2", "2-3"}
-    # Sofa span is outside the tea cut.
+    # Disjoint islands share one bridge: each on region stays visible.
     sofa_segments = covering(80, 80)
-    assert sofa_segments
-    assert all("table" not in segment["layer_ids"] for segment in sofa_segments)
+    carpet_only = covering(80, 200)
+    on_table = covering(160, 200)
+    assert sofa_segments and carpet_only and on_table
     assert {segment["label"] for segment in sofa_segments} <= {"2-3", "3-4"}
+    assert all("table" not in segment["layer_ids"] for segment in sofa_segments)
+    assert {segment["label"] for segment in carpet_only} <= {"1-2", "2-3"}
+    assert all(segment["layer_ids"] == ["carpet"] for segment in carpet_only)
+    assert {segment["label"] for segment in on_table} <= {"0-1", "1-2"}
+    assert all("table" in segment["layer_ids"] for segment in on_table)
+    for track in result["tracks"]:
+        assert any(
+            segment["relation"] == "band"
+            and any(abs(point["x"] - 80) <= 8 and abs(point["y"] - 80) <= 12 for point in segment["points"])
+            for segment in track["segments"]
+        )
+        assert any(
+            segment["relation"] == "band"
+            and any(abs(point["x"] - 160) <= 8 and abs(point["y"] - 200) <= 12 for point in segment["points"])
+            for segment in track["segments"]
+        )
+
+
+def test_disjoint_subjects_keep_every_on_segment():
+    """Lamp and picture do not overlap: no half cut that drops one subject's on."""
+    lamp = _layer("lamp", "挂灯", 4, 400, 200, (40, 40, 80, 100))
+    picture = _layer("picture", "挂画", 11, 400, 200, (240, 40, 100, 100))
+    result = solve(_scene([lamp, picture]), [(60, 80), (160, 80), (280, 80)])
+    assert result["status"] == "ok"
+    assert result["tracks"]
+    for track in result["tracks"]:
+        xs = [
+            point["x"]
+            for segment in track["segments"]
+            if segment["relation"] == "band"
+            for point in segment["points"]
+        ]
+        assert any(x <= 100 for x in xs)
+        assert any(x >= 240 for x in xs)
+        labels = {
+            segment["label"]
+            for segment in track["segments"]
+            if segment["relation"] == "band"
+        }
+        assert labels & {"3-4", "4-5"}
+        assert labels & {"10-11", "11-12"}
 
 
 def test_deeper_contour_keeps_the_span_it_opens():
